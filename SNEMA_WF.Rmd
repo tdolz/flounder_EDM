@@ -1,0 +1,311 @@
+---
+title: "SNEMA Winter Flounder EDM"
+author: "tara"
+date: "9/1/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+#install.packages("devtools") #if required
+#devtools::install_github("tanyalrogers/GPEDM") #update frequently
+library(dplyr)
+library(tidyverse)
+library(purrr)
+library(ggplot2)
+library(rEDM)
+library(GPEDM)
+library(Metrics)
+library(kableExtra)
+library(corrplot)
+source("hierEDM_helper_functions.R")
+```
+
+
+The idea here is to look at dynamic correlation of winter flounder indices to see connectivity. Maybe we can map it as a function of distance? 
+Another idea would be to try to revisit the predator/prey and the environmental correlates. 
+
+
+
+**Load Data**  
+Are these "mean numbers per tow", such as the nmfs bts, expanded with an age-length key?   
+Do they take changes in gear/ship etc. into account?  
+Not always clear whether 7 is a plus group. Perhaps cut to age 6?
+**Why are we predominantly focused on spring surveys, when it's most likely the fish are up in the estuaries at that time???**  
+We should get some fall survey data.
+```{r}
+dmf_spring <- read.csv("data_WF_SNEMA/DMFSPRING_WFSNEMA.csv", header = TRUE)##MADMF Spring BTS mean numbers per tow, 7 is a plus group
+ct_spring <- read.csv("data_WF_SNEMA/CTSpring_WFSNEMA.csv", header = TRUE) #CTDEEP spring BTS mean numbers per tow, 7 is a plus group
+nmfs_fall <- read.csv("data_WF_SNEMA/fallBTS_WFSNEMA.csv", header = TRUE) #NMFS fall BTS mean numbers per tow, 7 is a plus group
+nmfs_spring <- read.csv("data_WF_SNEMA/springBTS_WFSNEMA.csv", header = TRUE)#NMFS Spring BTS mean numbers per tow, 7 is a plus group
+nj_river <- read.csv("data_WF_SNEMA/NJRiver_WFSNEMA.csv", header = TRUE)#mean numbers per tow, 7 is a plus group
+nj_trawl <- read.csv("data_WF_SNEMA/NJTrawl_SNEMAWF.csv", header = TRUE)#mean numbers per tow, 7 is a plus group
+ri_spring <- read.csv("data_WF_SNEMA/RI_Spring_SNEMAWF.csv", header = TRUE) # RI DFW spring mean numbers at age. 
+recruits <-read.csv("data_WF_SNEMA/SNEMAWF_recruitment.csv", header = TRUE) #mean numbers per tow recruitmet (age 0) indices
+uri_trawl <-read.csv("data_WF_SNEMA/URIGSO_WF.csv", header = TRUE) #mean numbers per tow, 7 is a plus group
+nemap_spring <-read.csv("data_WF_SNEMA/wfsurvey_NEMAP_SPRING.csv", header = TRUE) #nemap, 7 is a plus group
+nmfs_winter <-read.csv("data_WF_SNEMA/winter_bts_SNEMAWF.csv", header = TRUE) #NMFS winter BTS mean numbers per tow, 5 is a plus group
+comm_landings <-read.csv("data_WF_SNEMA/commercial_landings_WFSNEMA.csv", header = TRUE) #commercial landings (no discards, kg, mt and lbs)
+total_catch <-read.csv("data_WF_SNEMA/total_catch_SNEMAWF.csv", header = TRUE) #total catch 
+
+#discards, MRIP, MRIP CAA< WAA, SSB_WAA, January 1 WAA,  data also available. 
+
+```
+
+Clean data  
+```{r}
+#format the survey datasets identically - 
+#####does not include recruits, nmfs_winter, comm landings, total catch
+df_list <- list(dmf_spring,ct_spring,nmfs_fall,nmfs_spring,nj_river,ri_spring,uri_trawl, nemap_spring)
+names(df_list) <-c("dmf_spring","ct_spring","nmfs_fall","nmfs_spring","nj_river","ri_spring","uri_trawl", "nemap_spring")
+TA_list <-list()
+df_list2 <-list()
+df_list_np <-list()
+for (i in 1:length(df_list)){
+  TA_list[[i]] <-dplyr::select(df_list[[i]], Year, Total)%>%mutate(survey=names(df_list)[i])
+  df_list2[[i]] <-dplyr::select(df_list[[i]], 1:9)%>%mutate(survey=names(df_list)[i])
+  names(df_list2[[i]]) <-c("Year","Age_1","Age_2","Age_3","Age_4","Age_5","Age_6","Age_7plus","Total")
+  df_list_np[[i]] <-dplyr::select(df_list2[[i]], 1:7)%>%mutate(survey=names(df_list)[i]) #version without total and without plus group. 
+  names(df_list_np[[i]]) <-c("Year","Age_1","Age_2","Age_3","Age_4","Age_5","Age_6","survey")
+}
+
+#create a dataset with total abundance for all the locations
+total_abundance <-bind_rows(TA_list)
+
+#create a long form dataset with all years and surveys combined. 
+all_surveys <-bind_rows(df_list_np)
+allsurv_long <-pivot_longer(all_surveys, cols=2:7, names_to = "age_class",values_to = "abundance")
+
+```
+
+Plot data
+```{r}
+allsurv_long%>%
+  ggplot(aes(Year,abundance, color=survey))+
+  geom_line()+
+  facet_wrap(~age_class, scales="free")+theme_classic()
+
+allsurv_long%>%
+  ggplot(aes(Year,abundance, color=survey))+
+  geom_line()+
+  facet_grid(survey~age_class, scales="free")+theme_bw()
+
+```  
+
+**Consider removing NEMAP_spring and NJ river and trimming data to 1985-2021**   
+because there's not very many years of data there. 
+```{r}
+##min and max year for each survey
+allsurv_long%>%group_by(survey)%>%summarize(maxyear=max(Year),minyear=min(Year))
+
+allsurv_long <-filter(allsurv_long, survey != "nemap_spring" & survey != "nj_river")%>%filter(Year >=1985)
+total_abundance <-filter(total_abundance, survey != "nemap_spring" & survey != "nj_river")%>%filter(Year >=1985)
+
+```
+
+**DECIDE WHETHER TO LOG THE DATA**  
+skip this chunk if you are not logging. I think we will NOT log the data because of the +1 issue. 
+```{r, eval=FALSE}
+#allsurv_log <-mutate(allsurv_long, abundance=log(abundance+1))
+#TA_log <-mutate(total_abundance, N_total=log(Total+1))
+```
+
+**CORRELATION**  
+lagged correlation of age classes within each survey
+surveys within each age class  
+total abundance by survey  
+```{r}
+#total abundance by survey  
+ta_wide <-pivot_wider(total_abundance,id_cols=Year, names_from =survey, values_from = Total)
+M <-cor(ta_wide[,-1], use="pairwise.complete.obs")
+corrplot(M, type="upper", method="color", title="total abundance", mar=c(0,0,2,0), addCoef.col = 'black', diag=F,tl.col = "black")
+
+#surveys within each age class
+age_list <- colnames(all_surveys)[2:7]
+for (i in 1:length(age_list)){
+  df <-all_surveys[,c(1,i,8)]
+  df_wide <-pivot_wider(df, id_cols=Year, names_from = survey, values_from=names(df)[2])
+  M <-cor(df_wide[,-1], use="pairwise.complete.obs")
+  corrplot(M, type="upper", method="color", title=age_list[[i]], mar=c(0,0,2,0), addCoef.col = 'black', diag=F,tl.col = "black")
+}
+
+#lagged age classes within each survey
+surv_list <-unique(all_surveys$survey)
+surv_list<-surv_list[!surv_list %in% c("nj_river","nemap_spring")]
+for (i in 1:length(surv_list)){
+  df <- filter(all_surveys, survey==surv_list[[i]])
+  dfblock <-df[,1:7]
+  dfblock <-make_block(dfblock, max_lag = 6, tau=1)
+  dfblock <-dplyr::select(dfblock,"Age_1(t+0)", "Age_2(t+1)","Age_3(t+2)","Age_4(t+3)","Age_5(t+4)","Age_6(t+5)")
+  M <-cor(dfblock, use="pairwise.complete.obs")
+  corrplot(M, type="upper", method="color", title=surv_list[[i]], mar=c(0,0,2,0), addCoef.col = 'black', diag=F,tl.col = "black")
+}
+
+```
+
+**Total abundance fits across a grid of E and Tau**  
+```{r, cache=TRUE}
+Ees <-seq(1,5,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = total_abundance, y = "Total", pop="survey",scaling = "local", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+``` 
+R-squared indicates best E=2 and best tau=1  
+RMSE indicates best E=5 and best tau=3
+
+**fit models and extract fitstats - all of the data**  
+```{r}
+maxE=5
+
+#total abundance combined across surveys - an overall index
+ta_all <-total_abundance %>% group_by(Year)%>%summarize(TA=sum(Total))%>%as.data.frame()
+TA_all <- fitGP(data=ta_all, y="TA", E=maxE, tau=1, predictmethod = "loo")
+
+#total abundance, survey is the structure
+TA_survey <-fitGP(data=total_abundance, y="Total", pop="survey", scaling="local", E=maxE, tau=1, predictmethod = "loo")
+
+##### extract fitstats ####
+#################################
+outsamp <-bind_rows(TA_all$outsampfitstats,TA_survey$outsampfitstats)
+names(outsamp) <-c("OOS_R2","OOS_rmse")
+insamp <-bind_rows(TA_all$insampfitstats,TA_survey$insampfitstats)
+rhos <-c(tail(TA_all$pars,1), tail(TA_survey$pars,1))
+fitstats <-bind_cols(outsamp,insamp,rhos)%>%as.data.frame()
+rownames(fitstats) <-c("total_abundance_combined","TA_by_survey")
+colnames(fitstats)[11]<-"rho"
+fitstats <-rownames_to_column(fitstats, var="model")%>%mutate(`age class`="all")%>% mutate(across(OOS_R2:df, as.numeric))
+#indv surveys
+TA_surveys <-full_join(TA_survey$outsampresults, TA_survey$insampresults, by=c("timestep","pop","obs"))%>%dplyr::rename(survey=pop)%>%mutate(year=timestep+1984)
+
+#### Visualize fits over data ####
+###### PLOT ######
+TA_surveys%>%
+ #filter(age !="total abundance")%>% #filter out N-total
+ ggplot() +
+ facet_wrap(survey~., scales = "free") +
+ geom_line(aes(x=year,y=predmean.x)) + #out of sample
+ #geom_line(aes(x=timestep,y=predmean.y),lty="dashed") + #insample
+ geom_ribbon(aes(x=year,y=predmean.x,ymin=predmean.x-predfsd.x,ymax=predmean.x+predfsd.x), alpha=0.4,fill="#03C0C1") + #out of sample
+ #geom_ribbon(aes(x=timestep,y=predmean.y, ymin=predmean.y-predfsd.y,ymax=predmean.y+predfsd.y), alpha=0.4,fill="#007F80") + #in sample
+ geom_point(aes(x=year, y=obs)) +
+ theme_classic()
+
+```
+
+**pairwise dynamic correlation between surveys**  
+```{r}
+maxE=5
+#total abundance by survey  
+vars = colnames(ta_wide[2:7])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+rho_matrixTA = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+for (i in 1:ncol(var_pairs)) {
+ df = filter(total_abundance, survey %in% c(var_pairs[1,i], var_pairs[2,i]))
+ fitTA <-fitGP(data = df, y = "Total", pop="survey",scaling = "local", E=maxE, tau=1, predictmethod = "loo")
+ fitTA_rho <-tail(fitTA$pars,1)
+ rho_matrixTA[var_pairs[1,i], var_pairs[2,i]] = fitTA_rho
+}
+rho_matrixTA
+round(rho_matrixTA,4) %>% 
+ kbl()%>%kable_classic(full_width = F, html_font = "Cambria")
+
+corrplot(rho_matrixTA, method="color", type="upper", diag=FALSE, is.corr = TRUE,mar=c(0,0,2,0),addCoef.col = 'black',tl.col = "black")
+
+```
+
+Pairwise dynamic correlation: surveys within each age class
+```{r}
+#surveys within each age class
+all_surveys2 <-filter(all_surveys, survey != "nemap_spring" & survey != "nj_river")%>%
+   filter(Year > 1984 & Year < 2022)
+age_list <- colnames(all_surveys2)[1:ncol(all_surveys2)-1][-1]
+rm_list <-list()
+for (i in 1:length(age_list)){
+  df <-all_surveys2[,c(1,i,8)]
+  df_wide <-pivot_wider(df, id_cols=Year, names_from = survey, values_from=names(df)[2])%>%
+    mutate(age=colnames(all_surveys2)[[i]])
+  
+vars = colnames(df_wide)[2:ncol(df_wide)-1][-1]
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+rho_matrixTA = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (j in 1:ncol(var_pairs)) {
+ df2 = filter(df, survey %in% c(var_pairs[1,j], var_pairs[2,j]))
+colnames(df2)[2] <-"Total"
+ fitTA <-fitGP(data = df2, y = "Total", pop="survey",scaling = "local", E=maxE, tau=1, predictmethod = "loo")
+ fitTA_rho <-tail(fitTA$pars,1)
+ rho_matrixTA[var_pairs[1,j], var_pairs[2,j]] = fitTA_rho
+ 
+}
+rm_list[[i]]<-rho_matrixTA
+}
+```
+
+
+
+**fit models - predict last five years**
+
+**fit models - environmental data**
+
