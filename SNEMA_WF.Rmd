@@ -275,8 +275,8 @@ corrplot(rho_matrixTA, method="color", type="upper", diag=FALSE, is.corr = TRUE,
 
 ```
 
-Pairwise dynamic correlation: surveys within each age class
-```{r}
+Pairwise dynamic correlation: surveys within each age class - **Can't get this to work for now**. 
+```{r, eval=F}
 #surveys within each age class
 all_surveys2 <-filter(all_surveys, survey != "nemap_spring" & survey != "nj_river")%>%
    filter(Year > 1984 & Year < 2022)

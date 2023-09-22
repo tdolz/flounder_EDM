@@ -1,0 +1,435 @@
+---
+title: "GOM_WF"
+author: "tara"
+date: "9/22/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+#install.packages("devtools") #if required
+#devtools::install_github("tanyalrogers/GPEDM") #update frequently
+library(dplyr)
+library(tidyverse)
+library(purrr)
+library(ggplot2)
+library(rEDM)
+library(GPEDM)
+library(Metrics)
+library(kableExtra)
+library(corrplot)
+source("hierEDM_helper_functions.R")
+```
+
+
+**Load some data**
+*30plusbiomass*: Total estimated 30+ cm biomass (mt) based on wing spread. Catch estimates of FMSY and 75%FMSY catch (mt) for the combined survey estimated for spring 2009 to 2022 and fall 2009 to 2021 using an average q assumption of 0.704 for the spring and 0.805 for the fall (Miller et al., 2020). The proportion of the 30+cm biomass in each survey area is also shown. Fall 2010 estimate is based on a different strata set since the NEFSC fall survey did not cover Cape Cod bay strata. 2020 could not be estimated due to missing surveys due to covid.  
+*combined biomass*: NEFSC, MDMF, MENH survey biomass indices for Gulf of Maine winter flounder. Indices are stratified mean weight (kg) per tow. NEFSC indices are for inshore strata (58,59,60,61,65,66) and offshore strata (26,27,38,39,40).  NEFSC indices are calculated with trawl door conversion factors where appropriate.  NEFSC GOM length based Bigelow conversions were applied from 2009-2022.  NEFSC fall 2010 did not sample Cape Cod Bay. NEFSC indices use SHG (136; prior 2009) and TOGA (132x; post 2008) for the tow evaluation criteria. MDMF indices use SHG (136) tow evaluation criteria for all years.  MENH indices use strata 1 through 4.  
+```{r}
+plus30 <- read.csv("data_WF_GOM/GOM_WF_30plusBiomass.csv", header = TRUE)
+combio <- read.csv("data_WF_GOM/GOM_WF_30plusBiomass.csv", header = TRUE)
+```
+
+format the data
+```{r}
+```
+
+plot the data  
+```{r}
+plus30%>%
+  ggplot(aes(year,X30_plus_biomass))+
+  geom_line()+
+  facet_grid(~season, scales="free")+theme_bw()
+```
+Fits across a grid of E and Tau
+```{r}
+Ees <-seq(1,5,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = plus30, y = "X30_plus_biomass", pop="season",scaling = "local", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+```
+
+Tau=1 E= 5
+
+**now for combined and then spring and fall alone**
+```{r}
+plus30_spring <-filter(plus30, season=="Spring")
+plus30_fall <-filter(plus30, season=="Fall")
+plus30_sum <-plus30 %>% group_by(year)%>%summarize(X30_plus_biomass=sum(X30_plus_biomass))
+
+##Combined
+Ees <-seq(1,5,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = plus30_sum, y = "X30_plus_biomass", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ ggtitle("combined")+geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ ggtitle("combined")+geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+##SPRING
+Ees <-seq(1,5,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = plus30_spring, y = "X30_plus_biomass", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ ggtitle("spring")+geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ ggtitle("spring")+geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank()) 
+
+##fall
+Ees <-seq(1,5,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = plus30_fall, y = "X30_plus_biomass", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ ggtitle("fall")+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ ggtitle("fall")+geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+```
+
+
+
+```{r}
+maxE=5
+
+#total abundance, survey is the structure
+gp30plus <-fitGP(data = plus30, y = "X30_plus_biomass", pop="season",scaling = "local", E=5, tau=1, predictmethod = "loo")
+
+##### extract fitstats ####
+#################################
+plus30stats <-full_join(gp30plus$outsampresults, gp30plus$insampresults, by=c("timestep","pop","obs"))%>%dplyr::rename(season=pop)%>%mutate(year=timestep+2008)
+
+###### PLOT ######
+plus30stats%>%
+ ggplot() +
+ facet_wrap(season~., scales = "free") +
+ geom_line(aes(x=year,y=predmean.x)) + #out of sample
+ geom_ribbon(aes(x=year,y=predmean.x,ymin=predmean.x-predfsd.x,ymax=predmean.x+predfsd.x), alpha=0.4,fill="#03C0C1") + #out of sample
+ geom_point(aes(x=year, y=obs)) +
+ theme_classic()
+```
+
+
+
+**Variable time step EDM SPRING**  - could go to a maxE of 3 for spring and fall alone. 
+```{r}
+HPmisslags=makelags(data=plus30_spring, y="X30_plus_biomass", time="year", E=2, tau=1, vtimestep=T)
+HPmiss <-dplyr::select(plus30_spring, year, X30_plus_biomass)
+HPmissdata=cbind(HPmiss,HPmisslags)
+vtdemo=fitGP(data=HPmissdata, y="X30_plus_biomass", x=colnames(HPmisslags), time="year")
+
+basepredplot=ggplot(vtdemo$insampresults,aes(x=timestep,y=predmean)) +
+  geom_line() + 
+  geom_ribbon(aes(ymin=predmean-predsd,ymax=predmean+predsd), alpha=0.4, color="black") +
+  geom_point(aes(y=obs)) +
+  theme_bw()
+basepredplot
+
+#Interpolation
+HPmissinterp=HPmissdata[is.na(HPmissdata$X30_plus_biomass),]
+#reinsert true values to get fit statistics
+HPmissinterp$X30_plus_biomass=plus30_spring$X30_plus_biomass[is.na(HPmissdata$X30_plus_biomass)]
+vtinterp=predict(vtdemo, newdata = HPmissinterp)
+vtinterp$outsampfitstats
+
+basepredplot +
+  geom_point(data=vtinterp$outsampresults, aes(y=predmean), color="red") +
+  geom_errorbar(data=vtinterp$outsampresults,
+                aes(ymin=predmean-predsd,ymax=predmean+predsd),color="red")
+
+#forecasting
+HPmissfore=makelags(data=HPmiss, y="X30_plus_biomass", time="year", E=2, tau=1,vtimestep=T,  
+                    forecast=T, Tdiff_fore=c(1,2,3))
+HPmissfore
+vtpred=predict(vtdemo, newdata = HPmissfore)
+
+basepredplot + 
+  geom_point(data=vtpred$outsampresults, aes(y=predmean), color="red") +
+  geom_errorbar(data=vtpred$outsampresults,
+                aes(ymin=predmean-predsd,ymax=predmean+predsd),color="red")
+#this seems wrong
+```
+
+**Variable time step EDM HIERARCHAL**  - wierdly only works for E=2
+```{r}
+HPmisslags=makelags(data=plus30, y="X30_plus_biomass", time="year", E=2,pop="season", tau=1, vtimestep=T)
+HPmiss <-dplyr::select(plus30, year,season, X30_plus_biomass)
+HPmissdata=cbind(HPmiss,HPmisslags)
+vtdemo=fitGP(data=HPmissdata, y="X30_plus_biomass", x=colnames(HPmisslags), pop="season", time="year")
+
+basepredplot=ggplot(vtdemo$insampresults,aes(x=timestep,y=predmean)) +
+  geom_line() + 
+  geom_ribbon(aes(ymin=predmean-predsd,ymax=predmean+predsd), alpha=0.4, color="black") +
+  geom_point(aes(y=obs)) +
+  facet_wrap(~pop)+
+  theme_bw()
+basepredplot
+
+#Interpolation
+HPmissinterp=HPmissdata[is.na(HPmissdata$X30_plus_biomass),]
+#reinsert true values to get fit statistics
+HPmissinterp$X30_plus_biomass=plus30$X30_plus_biomass[is.na(HPmissdata$X30_plus_biomass)]
+vtinterp=predict(vtdemo, newdata = HPmissinterp)
+vtinterp$outsampfitstats
+
+basepredplot +
+  geom_point(data=vtinterp$outsampresults, aes(y=predmean), color="red") +
+  geom_errorbar(data=vtinterp$outsampresults,
+                aes(ymin=predmean-predsd,ymax=predmean+predsd),color="red")
+
+#forecasting
+HPmissfore=makelags(data=HPmiss, y="X30_plus_biomass", time="year", E=2, tau=1,vtimestep=T,  
+                    forecast=T, pop="season", Tdiff_fore=c(1,2,3))
+HPmissfore
+vtpred=predict(vtdemo, newdata = HPmissfore)
+
+basepredplot + 
+  geom_point(data=vtpred$outsampresults, aes(y=predmean), color="blue") +
+  geom_point(data=vtinterp$outsampresults, aes(y=predmean), color="red") +
+  geom_errorbar(data=vtinterp$outsampresults,
+                aes(ymin=predmean-predsd,ymax=predmean+predsd),color="red")+
+  geom_errorbar(data=vtpred$outsampresults,
+                aes(ymin=predmean-predsd,ymax=predmean+predsd),color="blue")
+
+```
+
+**Use 2009-2019 to predict 2020-2023**  
+we will input the interpolated values for 2020. 
+```{r}
+
+```
+
+Problem: Missing data
+
+**test how you would interpolate missing data compared to averaging**  
+```{r}
+
+
+```
+
+
