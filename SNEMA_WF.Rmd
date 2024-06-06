@@ -252,6 +252,29 @@ TA_surveys%>%
  geom_point(aes(x=year, y=obs)) +
  theme_classic()
 
+total <-full_join(TA_all$outsampresults, TA_all$insampresults, by=c("timestep","pop","obs"))%>%dplyr::rename(survey=pop)%>%mutate(year=timestep+1984)
+
+total%>%
+ ggplot() +
+ geom_line(aes(x=year,y=predmean.x)) + #out of sample
+ geom_ribbon(aes(x=year,y=predmean.x,ymin=predmean.x-predfsd.x,ymax=predmean.x+predfsd.x), alpha=0.4,fill="#03C0C1") + 
+ geom_point(aes(x=year, y=obs)) +
+ theme_classic()
+
+
+```
+
+```{r}
+
+```
+
+**Each survey is a separate model**  
+```{r}
+
+```
+**Each age class is a separate model**  
+```{r}
+
 ```
 
 **pairwise dynamic correlation between surveys**  
@@ -304,8 +327,248 @@ rm_list[[i]]<-rho_matrixTA
 ```
 
 
+***Revise the individual ages function***
+```{r}
+indv_age <-function(df, E){
+ ages <-unique(df$age_class)
+ maxE <-E # 
+ fitstats <-list()
+ for (m in 1:length(ages)){
+    tryCatch({ #error catch line
+  new_df <-filter(df, age_class==ages[m])
+  newdfLags = makelags(data=new_df, y="value", E=maxE, tau=1)
+  new_df = cbind(new_df,newdfLags)
+  new_df.train = filter(new_df, time_step <= (max(new_df$time_step)-10))
+  new_df.test = filter(new_df, time_step > (max(new_df$time_step)-10))
+  mod1 <-fitGP(data = new_df.train, y = "value", x=colnames(newdfLags),newdata=new_df.test,
+               pop="age_class",scaling = "global",predictmethod = "loo")
+  mod1_out<-c(mod1$outsampfitstats, mod1$insampfitstats,as.character(ages[m]))
+  names(mod1_out)<-c("OOS_R2","OOS_rmse","R2","rmse", "ln_post", "lnL_LOO","df","age class")
+  fitstats[[m]] <- mod1_out
+   }, error=function(e){}) #error catch line
+ }
+ fitstats <-bind_rows(fitstats)%>%as.data.frame()%>%mutate(across(OOS_R2:df, as.numeric))
+}
+
+
+####
+######## Function to fit GP for one model based on it's own lags and lags of age classes above and below###
+mixed_age <-function(df, maxE){
+  ages <-unique(df$age_class)
+  #maxE <-round(sqrt(dim(df)[1]/length(ages)))
+  fitstats <-list()
+  for (m in 1:length(ages)){
+    #we might not need this if statement. 
+    if (m==1){
+      new_df <-filter(df, age_class==ages[m] | age_class == ages[m+1])
+      
+    } else if (m==length(ages)) {
+      new_df <-filter(df, age_class==ages[m] | age_class == ages[m+1])
+    } else {
+      new_df <-filter(df, age_class==ages[m] | age_class==ages[m+1] | age_class==ages[m-1])
+    }
+    if ("age" %in% colnames(new_df)){
+      new_df <-dplyr::select(new_df, -age)
+    }
+    
+    new_df <-pivot_wider(new_df, names_from = "age_class",values_from = "value")
+    #manually scale:
+    lastcol <-as.numeric(dim(new_df)[2])
+    new_df <- new_df %>% mutate(across(2:all_of(lastcol),scale)) 
+    dfLags = makelags(y=new_df[,2:all_of(lastcol)], E=maxE, tau=1)
+    dfdata = as.data.frame(cbind(new_df,dfLags))
+    #testing and training (not for empirical data)
+    #df.train = filter(dfdata, Year < (max(Year)-10))
+    #df.test = filter(dfdata, Year >= (max(Year)-10))
+    #mod1 = fitGP(data=df.train, y=ages[m], xd=colnames(dfLags), datanew=df.test, predictmethod = "loo")
+    mod1 <-fitGP(data = dfdata, y = paste(ages[m]), x=colnames(dfLags), predictmethod = "loo")
+    mod1_out<-c(mod1$outsampfitstats, mod1$insampfitstats,as.character(ages[m]))
+    names(mod1_out)<-c("OOS_R2","OOS_rmse","R2","rmse", "ln_post", "lnL_LOO","df","age class")
+    fitstats[[m]] <- mod1_out
+  }
+  fitstats <-bind_rows(fitstats)%>%as.data.frame()%>%mutate(across(OOS_R2:df, as.numeric))
+}
+```
+
+**Perform the mixed age analysis on the DMF spring winter flounder**  
+```{r}
+pivWF <-pivot_longer(dmf_spring,cols=2:9, names_to="age_class",values_to = "value")%>%
+ mutate(age_class=as.factor(age_class))%>%as.data.frame()%>%mutate(age_class = fct_relevel(age_class, c("X1","X2","X3","X4","X5","X6","X7","Total")))
+
+pivWF$age <- fct_recode(pivWF$age_class,"age 1"="X1","age 2"="X2","age 3"="X3","age 4"="X4","age 5"="X5","age 6" ="X6","age 7"="X7")
+
+#create an abundance index from all age classes 
+WF_Ntotal <-dplyr::select(dmf_spring, Year, Total)
+
+###plot by year
+pivWF%>% ggplot(aes(Year,value))+
+ geom_line()+ facet_wrap(~age, scales="free")+ theme_classic()
+```
+Fits across a grid of E and Tau
+**SB FITS ACROSS A GRID OF E and TAU**  
+this is so we can decide the best E and Tau to use. We can use R-squared or RMSE as the metric to choose.  
+Do not run every time. 
+```{r}
+#only to 2019
+pivWFn <-filter(pivWF, age !="Total" & Year < 2020)
+
+#loop to try hierarchical GPs on every combination of E and tau. 
+Ees <-seq(1,10,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitSB <-fitGP(data = pivWFn, y = "value", pop="age",scaling = "local", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitSB_r2 <-fitSB$outsampfitstats[[1]]
+  fitSB_rmse <-fitSB$outsampfitstats[[2]]
+  r2matrixSB[var_pairs[i,1], var_pairs[i,2]] = fitSB_r2
+  ETdf[i,3] <-fitSB_r2
+  ETdf[i,4] <-fitSB_rmse
+  rmsematrixSB[var_pairs[i,1], var_pairs[i,2]] = fitSB_rmse
+ },silent=T)
+}
+r2matrixSB
+rmsematrixSB
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+#round(r2matrixSB,4) %>% 
+# kbl()%>%kable_classic(full_width = F, html_font = "Cambria")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ scale_x_discrete(limits=seq(1,10,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+#ggsave("r2ETSBbiom.png", path="/Users/tdolan/documents/postdoc/age structure/agestructfigs")
+#ggsave("supplementary_figs/r2ETSBbiom10.png")
+#ggsave("supplementary_figs/r2ETSBbiom10LOG.png")
+#dev.off()
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ scale_x_discrete(limits=seq(1,10,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+#ggsave("supplementary_figs/RMSE_ETSBbiom10.png")
+#ggsave("supplementary_figs/RMSE_ETSBbiom10LOG.png")
+dev.off()
+```
+
+**SB: COMPARE HIERARCHICAL MIXED-AGE AND SINGLE-AGE APPROACHES**
+```{r}
+maxE <-9 #previously E=9
+
+#Individual age GP for WFn
+WFn_ages <-indv_age(pivWFn, E=10)%>%mutate(model="WFn_indvAge")
+#mixed age GP for WFn
+WFn_mixed <-mixed_age(pivWFn,maxE)%>%mutate(model="WFn_mixedAge")
+#hierarchical model, but extract individual age info.. somehow. 
+WFn_hier <-fitGP(data = pivWFn, y = "value", pop="age",scaling = "local", E=maxE, tau=1, predictmethod = "loo")
+
+#extract individual age from hierarchical model
+outsamp <-bind_cols(WFn_hier$outsampfitstatspop$R2pop,WFn_hier$outsampfitstatspop$rmsepop)
+names(outsamp) <-c("OOS_R2","OOS_rmse")
+insamp <-bind_cols(WFn_hier$insampfitstatspop$R2pop,WFn_hier$insampfitstatspop$rmsepop)
+names(insamp) <-c("R2","rmse")
+fitstats_WFnHier <-cbind(outsamp, insamp)
+fitstats_WFnHier <-mutate(fitstats_WFnHier, model="WFn_Hier")%>%rownames_to_column("age")
+
+#get an aggregate r2 from the hierarchical model
+fithieragg <- filter(sumtotal, !is.na(predmean.x) & pop=="aggregate")
+fithieraggR2 <-getR2(obs=fithieragg$obs, pred=fithieragg$predmean.x)
+
+#extract individual age fitstats from individual age model
+fitstats_WFnIndvAge <- mutate(WFn_ages, across(OOS_R2:df, as.numeric))%>%rownames_to_column("age")
+
+#extract mixed age fitstats from mixed age model
+fitstats_WFnMixed <- mutate(WFn_mixed, across(OOS_R2:df, as.numeric))%>%rownames_to_column("age")
+
+```
+
+
+
+
+**Co-predictability of temperature on winter flounder recruitment (if data is available)- does adding it improve prediction**
+
+**predators (striped bass, fluke, blue crab on winter flounder)**
 
 **fit models - predict last five years**
 
 **fit models - environmental data**
+
+**Peconics database**  
+We did this and there is no clear story here. 
+```{r}
+#summer flounder peconics
+sf_peconic <-read.csv("WF_BC_SF/peconicsSF.csv", header = TRUE)
+#yoy winter flounder peconics
+wf_peconic <-read.csv("WF_BC_SF/peconicsSF.csv", header = TRUE)
+
+#quick and dirty way is to combine the datasets and make a giant field
+names(wf_peconic) <-c("Year","wf_0","wf_1","wf_2","wf_3","wf_4","wf_5","wf_6","wf_7","wf_Total","wf_CV")
+names(sf_peconic)<-c("Year","sf_0","sf_1","sf_2","sf_3","sf_4","sf_5","sf_6","sf_7","sf_Total","sf_CV")
+peconics <-full_join(wf_peconic,sf_peconic)
+
+
+#pec <-bind_rows(wf_peconic, sf_peconic)%>%pivot_longer(cols=2:10, names_to = "age", values_to = "abundance")
+
+pecs <-dplyr::select(peconics,-wf_CV, -sf_CV)
+                     
+vars = colnames(pecs[-1])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = pecs, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= 1, E = 3,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 3]
+}
+
+ccm_matrix
+
+corrplot(ccm_matrix, method="color", type="upper", diag=FALSE, is.corr = TRUE,mar=c(0,0,2,0),
+         #addCoef.col = 'black',
+         tl.col = "black")
+#take out all the autocorrelated pairs. 
+
+```
 

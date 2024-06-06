@@ -30,13 +30,10 @@ source("hierEDM_helper_functions.R")
 *combined biomass*: NEFSC, MDMF, MENH survey biomass indices for Gulf of Maine winter flounder. Indices are stratified mean weight (kg) per tow. NEFSC indices are for inshore strata (58,59,60,61,65,66) and offshore strata (26,27,38,39,40).  NEFSC indices are calculated with trawl door conversion factors where appropriate.  NEFSC GOM length based Bigelow conversions were applied from 2009-2022.  NEFSC fall 2010 did not sample Cape Cod Bay. NEFSC indices use SHG (136; prior 2009) and TOGA (132x; post 2008) for the tow evaluation criteria. MDMF indices use SHG (136) tow evaluation criteria for all years.  MENH indices use strata 1 through 4.  
 ```{r}
 plus30 <- read.csv("data_WF_GOM/GOM_WF_30plusBiomass.csv", header = TRUE)
-combio <- read.csv("data_WF_GOM/GOM_WF_30plusBiomass.csv", header = TRUE)
+survdat <-read.csv("data_WF_GOM/GOM_WF_survey.csv", header = TRUE)
 ```
 
-format the data
-```{r}
-```
-
+**Plus 30 data**
 plot the data  
 ```{r}
 plus30%>%
@@ -425,11 +422,127 @@ we will input the interpolated values for 2020.
 ```
 
 Problem: Missing data
-
 **test how you would interpolate missing data compared to averaging**  
 ```{r}
 
 
 ```
 
+Problem: forecasting  
+```{r}
+
+```
+
+Forecast the last three years
+```{r}
+survdat2 <-dplyr::select(survdat, Year, NEFSC_Spring, NEFSC_Fall, MDMF_Spring, MDMF_Fall)%>%filter(Year > 1978)
+
+#cut to 2019, fit across a grid of E and Tau
+survdat3 <-filter(survdat2, Year < 2019)
+
+#long format
+survdat3long <-pivot_longer(survdat3, cols=2:5, names_to = "survey",values_to = "abundance")%>%as.data.frame()
+
+Ees <-seq(1,9,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixTA = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+ try({
+  fitTA <-fitGP(data = survdat3long, y = "abundance", pop="survey",scaling = "local", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
+  fitTA_r2 <-fitTA$outsampfitstats[[1]]
+  fitTA_rmse <-fitTA$outsampfitstats[[2]]
+  r2matrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_r2
+  ETdf[i,3] <-fitTA_r2
+  ETdf[i,4] <-fitTA_rmse
+  rmsematrixTA[var_pairs[i,1], var_pairs[i,2]] = fitTA_rmse
+ },silent=T)
+}
+
+#r2matrixTA
+#rmsematrixTA
+
+ETdf <-as.data.frame(ETdf)
+names(ETdf)<-c("E","tau","OOS_R2","OOS_RMSE")
+
+### Plot
+#R- squared. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_R2,2)))+
+ geom_tile(aes(fill=OOS_R2), show.legend = TRUE)+
+ scale_fill_gradient(low="white",high="blue")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="r-squared"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+
+#RMSE. 
+ETdf %>%
+ #filter(E != 10)%>%
+ ggplot(aes(E,tau,label=round(OOS_RMSE,2)))+
+ geom_tile(aes(fill=OOS_RMSE), show.legend = TRUE)+
+ scale_fill_gradient(low="blue",high="white")+
+ #scale_x_discrete(limits=seq(1,5,1))+
+ geom_text()+
+ xlab("embedding dimension")+ylab("tau")+
+ guides(fill=guide_colorbar(title="RMSE"))+
+ theme_bw()+
+ theme(axis.text.x = element_text(size=12),
+       axis.text.y = element_text(size=12),
+       panel.background = element_rect(fill = "transparent", colour = "black"),
+       strip.background =element_rect(fill="white"),
+       panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())
+```
+some good options are E=8, Tau = 3 and E=5 tau = 1
+
+
+```{r}
+maxE=10
+
+#total abundance, survey is the structure
+TA_survey <-fitGP(data=survdat3long, y="abundance", pop="survey", scaling="local", E=maxE, tau=1, predictmethod = "loo")
+
+#indv surveys
+TA_surveys <-full_join(TA_survey$outsampresults, TA_survey$insampresults, by=c("timestep","pop","obs"))%>%dplyr::rename(survey=pop)%>%mutate(year=timestep+1978)
+
+TA_surveys%>%
+ #filter(age !="total abundance")%>% #filter out N-total
+ ggplot() +
+ facet_wrap(survey~., scales = "free") +
+ geom_line(aes(x=year,y=predmean.x)) + #out of sample
+ #geom_line(aes(x=timestep,y=predmean.y),lty="dashed") + #insample
+ geom_ribbon(aes(x=year,y=predmean.x,ymin=predmean.x-predfsd.x,ymax=predmean.x+predfsd.x), alpha=0.4,fill="#03C0C1") + #out of sample
+ #geom_ribbon(aes(x=timestep,y=predmean.y, ymin=predmean.y-predfsd.y,ymax=predmean.y+predfsd.y), alpha=0.4,fill="#007F80") + #in sample
+ geom_point(aes(x=year, y=obs)) +
+ theme_classic()
+
+#predict out over the new data
+train_2016 <-filter(survdat3long, Year < 2016)
+test_2018<-filter(survdat3long, Year >= 2016)
+
+fitwf=fitGP(data = train_2016, y = "abundance", E=5, tau=1, time = "Year", pop="survey", newdata = test_2018)
+plot(fitwf)
+# doesn't work
+
+#try MDMF data only
+train_2016 <-filter(survdat3long, Year < 2016 & survey %in% c("MDMF_Spring","MDMF_Fall"))
+test_2018<-filter(survdat3long, Year >= 2016)
+
+fitwf=fitGP(data = train_2016, y = "abundance", E=5, tau=1, time = "Year", pop="survey", newdata = test_2018)
+plot(fitwf)
+
+```
 

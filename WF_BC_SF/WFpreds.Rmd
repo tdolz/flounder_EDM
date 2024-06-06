@@ -1,0 +1,339 @@
+---
+title: "WF predators"
+author: "tara"
+date: "6/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The CTDEEP will have data going back to 1984. ---> need to request. 
+The URI GSO has data to the 1960s ---> Jeremy Collie is the contact. This would probably be the best dataset to tackle this question. 
+We have NMFS bottom trawl data but not idea for some inshore species. 
+We have blue crab data from Tanya. 
+Let's focus on CT for now because that is where our SB data is from. We might not have the searobin data yet. 
+```{r}
+library(dplyr)
+library(kableExtra)
+library(forcats)
+library(Metrics)
+library(tidyverse)
+library(purrr)
+library(rEDM)
+library(corrplot)
+#setwd("C:/Users/tdolan/Documents/R-Github/age_structureEDM")
+```
+
+
+**Load the data**
+format the crab data
+```{r}
+BC <-read.csv('steve_17pops_summarized_landings.csv', header=TRUE)
+#get blue crab data from the connectituct region. 
+#Site 4 is middle of the LI sound but only goes back to 1992. 
+#Site 5 is near great neck, LI 1988 ---> 2015
+#Site 6 is Jamaica Bay, NY 1988 ---> 2015
+#Site 3 is the Peconics  --> 1987- 2015
+#Site 7 is the Hudson river near white plains --> 1988-2015
+#
+#Let's start with the peconics for now. 
+PecBC <-filter(BC, Site==3)%>% 
+ filter(Year >= 1987 & Year <= 2012)%>%
+ mutate(scaled_landings = scale(Landings))
+```
+
+format the striped bass data
+```{r}
+#using CTSB indices for now
+CTSB <- read.csv("CTtrawlabundanceage19872017.csv", header = TRUE)
+
+#we are getting rid of the 15+ category
+CTSB <-CTSB[,2:16]
+pop24 <-pivot_longer(CTSB, 2:15, names_to = "age_class")%>%mutate(age_class=as.factor(age_class),lNvalue=log(value))%>%as.data.frame()%>%mutate(age_class = fct_relevel(age_class, c("X1","X2","X3","X4","X5","X6","X7","X8","X9","X10","X11","X12","X13","X14")))
+
+#create an abundance index from all age classes
+popAll <-mutate(CTSB, N_total=X1+X2+X3+X4+X5+X5+X6+X7+X8+X9+X10+X11+X12+X13+X14)
+popAll <-mutate(popAll, Year=as.integer(Year))
+
+#make a long version of popALL which you will use later. 
+names(popAll)<-c("time_step","1","2","3","4","5","6","7","8","9","10","11","12","13","14","N_total")
+popvert <-as.data.frame(pivot_longer(popAll, 2:15, names_to = "age",values_to="abundance"))
+popvert <-popvert %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age) %>%as.data.frame()
+
+#find mean and SD of each column and save for later to use to unscale data
+means <-colMeans(popAll[sapply(popAll, is.numeric)])
+stdevs <-popAll %>% summarise_if(is.numeric, sd)
+savescale <-as.data.frame(cbind(means,t(stdevs)))
+names(savescale)<-c("means","sd")
+savescale <-savescale[2:15,]
+#scale each column
+popscale <-transmute_at(popAll,2:15, scale) 
+popscale <-rownames_to_column(popscale, var="time_step")
+
+#vertical
+popscv <-as.data.frame(pivot_longer(popscale, 2:15, names_to = "age",values_to="abundance"))
+popscv <-popscv %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age)
+popscv <-as.data.frame(popscv)
+```
+
+format the summer flounder data
+```{r}
+#there are many different indices we could go with. 
+#for now let's use the CTDEP fall survey and the Peconics survey
+#but CTDEP fall survey is missing 2010, so maybe peconics survey? 
+pecSF <-read.csv("peconicsSF.csv", header = 4TRUE)
+CTSF_fall <-read.csv("SF_fall_CTDEEP.csv", header = TRUE)
+CTSF_spring <-read.csv("SF_spring_CTDEEP.csv", header = TRUE)
+
+#formating data
+pecSFsc <-pecSF[,1:10]
+pecSFsc <- filter(pecSFsc, Year >= 1987 & Year <= 2012)
+pecSFsc <-transmute_at(pecSFsc,2:10, scale) 
+pecSFsc$Year <-pecSF$Year
+```
+
+format the winter flounder data
+```{r}
+WFCTYOY <-read.csv("WF_CTYOY_matt.csv", header = TRUE)
+#age 0 shifted forward one year making it an age 1 index (according to Matt)
+WFCTYOY <-WFCTYOY[8:36,1:2]
+WFCTYOY <-mutate(WFCTYOY, age0 = lead(Total,1)) %>%select(-Total)#CAREFUL HERE 
+
+WFPec <-read.csv("WF_NYpeconicsYOY_matt.csv", header = TRUE)
+WFCT_spring <-read.csv("WF_CTDEEP_Spring_matt.csv", header = TRUE)
+
+#formatting data
+WFPec <-filter(WFPec, Year >= 1987 & Year <= 2012)%>% mutate(scaled_YOY= scale(Total))
+```
+
+graph peconic blue crab vs. peconic winter flounder and peconic summer flounder (scaled).
+Then try to predict YOY winter flounder from some block combination of summer flounder & blue crab. 
+```{r}
+Peconics <-mutate(WFPec, species="WF")%>%dplyr::select(-Total)
+SFp0 <-select(pecSFsc, X0, Year) %>%rename(scaled_YOY=X0) %>%mutate(species="SF") #SF 1987-2012
+PecBC0 <-select(PecBC, Year, scaled_landings)%>%rename(scaled_YOY=scaled_landings)%>%mutate(species="BC") #Blue crab 1987-2015
+Peconics <-full_join(Peconics, SFp0)%>%full_join(PecBC0)%>%mutate(Year=as.numeric(as.character(Year)))
+#Peconics <-filter(Peconics, Year >= 1987 & Year <= 2012) #clip the dataset. 
+###You actually should probably have scaled this after clipping the dataset to between 1987 and 2012 so excluded years would not bias. 
+###
+Peconics%>%
+ ggplot(aes(Year,scaled_YOY, color=species))+
+ geom_line()+ theme_classic()
+
+YOYwide <- pivot_wider(Peconics, id_cols=Year, names_from=species,values_from=scaled_YOY) 
+YOYwide <-as.data.frame(YOYwide)
+
+cormat=cor(YOYwide[,-1])
+corrplot(cormat, method = "color", tl.cex=0.5, tl.col = "black")
+```
+
+cross mapping the peconics dataset
+```{r}
+#what is the embedding dimension of winter flounder
+rho_E <- EmbedDimension(dataFrame = YOYwide, columns = "WF", target = "WF",lib = "1 26", pred = "1 26", showPlot = TRUE) 
+# gonna go with 4. 
+
+YOYwide <-mutate_all(YOYwide, as.numeric)
+vars = colnames(YOYwide[2:4])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = YOYwide, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= -1, E = 4,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 3]
+}
+
+ccm_matrix
+```
+
+```{r}
+ccm_matrix %>%
+  round(digits=3)%>%
+  kbl(caption = "CCM matrix") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+Compare summer flounder of each age to winter flounder ages 0 and 1
+```{r}
+WFCT <-WFCT_spring[4:32,1:10]
+WFCT <-full_join(WFCT, WFCTYOY)%>%filter(Year >=1988 & Year <= 2012)%>%select(-X) #not a lot of data here. #the age 0 is possibly from a different survey. The total may not reflect the real total now that we have combined with age 0
+names(WFCT)<-c("Year","WFTotal","WFAge1","WFAge2","WFAge3","WFAge4","WFAge5","WFAge6","WFAge7plus","WFAge0")
+
+#summer flounder spawn in the summer, so the young YOY are in the fall. 
+#Young yoy of fall 1984 are the spring yoy of 1985
+CTSF_fall0 <-select(CTSF_fall, Year, X0)%>%mutate(SFAge0=lag(X0,1))%>%
+ filter(Year >=1988 & Year <= 2012)%>%select(-X0)
+SFCT <-left_join(CTSF_fall0,CTSF_spring)%>%select(-X0)
+names(SFCT)<-c("Year","SFAge0","SFAge1","SFAge2","SFAge3","SFAge4","SFAge5","SFAge6","SFAge7plus","SFTotal")
+
+SFWF <-full_join(WFCT,SFCT)
+SFWFscaled <-transmute_at(SFWF,2:19, scale) 
+SFWFscaled$Year <-SFWF$Year
+SFWF0 <-select(SFWFscaled, -c("WFAge3","WFAge4","WFAge5","WFAge6","WFAge7plus"))
+
+SFWFlong <-pivot_longer(SFWFscaled, cols=c("WFTotal",  "WFAge1", "WFAge2", "WFAge3", "WFAge4",     "WFAge5",  "WFAge6","WFAge7plus","WFAge0", "SFAge0","SFAge1", "SFAge2",  "SFAge3",     "SFAge4",     "SFAge5","SFAge6", "SFAge7plus", "SFTotal"), names_to = "Age",values_to = "abundance")
+
+SFWFlong%>%
+ ggplot(aes(Year,abundance))+
+ geom_line()+ facet_wrap(~Age)+
+ theme_classic()
+
+SFWF0 <-mutate_all(SFWF0, as.numeric)
+SFWF0 <-na.omit(SFWF0)
+cormat=cor(SFWF0[,1:13])
+corrplot(cormat, method = "color", tl.cex=0.5, tl.col = "black")
+```
+
+cross mapping the SF and young WF dataset
+```{r}
+#what is the embedding dimension of winter flounder? We will base it on WF total?
+SFWF0 <-SFWF0[,c(14, 1,2,3,4,5,6,7,8,9,10,11,12,13)]
+rho_E <- EmbedDimension(dataFrame = SFWF0, columns = "WFTotal", target = "WFTotal",lib = "1 24", pred = "1 24", showPlot = TRUE) 
+# gonna go with 4. 
+
+#YOY
+rho_E <- EmbedDimension(dataFrame = SFWF0, columns = "WFAge0", target = "WFAge0",lib = "1 24", pred = "1 24", showPlot = TRUE) 
+#E = 3
+
+#Age1
+rho_E <- EmbedDimension(dataFrame = SFWF0, columns = "WFAge1", target = "WFAge1",lib = "1 24", pred = "1 24", showPlot = TRUE)
+#E=4
+
+#Age2
+rho_E <- EmbedDimension(dataFrame = SFWF0, columns = "WFAge2", target = "WFAge2",lib = "1 24", pred = "1 24", showPlot = TRUE)
+#E=4, but could be E=1
+```
+
+Next time: Feed each one it's own embedding dimension
+```{r}
+vars = colnames(SFWF0[2:13])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = SFWF0, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= -1, E = 4,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 3]
+}
+
+ccm_matrix
+
+```
+
+```{r}
+ccm_matrix %>%
+  round(digits=3)%>%
+  kbl(caption = "CCM matrix") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```   
+
+Compare SB and WF in CT spring trawl
+```{r}
+WFCT <-WFCT_spring[4:32,1:10]
+WFCT <-full_join(WFCT, WFCTYOY)%>%select(-X) #not a lot of data here. #the age 0 is possibly from a different survey. The total may not reflect the real total now that we have combined with age 0
+names(WFCT)<-c("Year","WFTotal","WFAge1","WFAge2","WFAge3","WFAge4","WFAge5","WFAge6","WFAge7plus","WFAge0") #1984- 2016
+WFCT <-filter(WFCT, Year >= 1987 & Year <= 2012)
+
+#now the striped bass
+SBCT <-popscale
+names(SBCT) <-c("Year", "SBAge1","SBAge2","SBAge3","SBAge4","SBAge5","SBAge6","SBAge7","SBAge8","SBAge9","SBAge10","SBAge11","SBAge12","SBAge13","SBAge14")
+SBCT <-SBCT[,-1]
+SBCT$Year <-CTSB$Year  #1987-2017
+SBCT <-filter(SBCT, Year >= 1987 & Year <= 2012)
+
+CTWFSB <-full_join(SBCT,WFCT) %>%
+ mutate(SBTotal = SBAge1+SBAge2+SBAge3+SBAge4+SBAge5+SBAge6+SBAge7+SBAge8+SBAge9+SBAge10+SBAge11+SBAge12+SBAge13+SBAge14)%>% select(-Year)%>%mutate_all(scale)
+CTWFSB$Year <-SBCT$Year
+
+CTWFSB0 <-select(CTWFSB, -c("WFAge3","WFAge4","WFAge5","WFAge6","WFAge7plus"))
+
+CTSBlong <-pivot_longer(CTWFSB, cols=c("WFTotal",  "WFAge1", "WFAge2", "WFAge3", "WFAge4",     "WFAge5",  "WFAge6","WFAge7plus","WFAge0","SBAge1","SBAge2","SBAge3","SBAge4","SBAge5","SBAge6","SBAge7","SBAge8","SBAge9","SBAge10","SBAge11","SBAge12","SBAge13","SBAge14", "SBTotal"), names_to = "Age",values_to = "abundance")
+
+CTSBlong%>%
+ ggplot(aes(Year,abundance))+
+ geom_line()+ facet_wrap(~Age)+
+ theme_classic()
+
+CTWFSB0 <-mutate_all(CTWFSB0, as.numeric)
+CTWFSB0c <-na.omit(CTWFSB0)%>% select(-Year)
+cormat=cor(CTWFSB0c)
+corrplot(cormat, method = "color", tl.cex=0.5, tl.col = "black")
+
+```
+
+Next time: Feed each one it's own embedding dimension
+```{r}
+CTWFSB0 <-CTWFSB0[,c(20,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19)]
+vars = colnames(CTWFSB0[2:20])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = CTWFSB0, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= -1, E = 4,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 3]
+}
+
+ccm_matrix
+
+```
+
+CT lists totals by species. 
+```{r}
+WFSBtots <-select(CTWFSB0, Year, WFAge0, WFTotal, SBTotal)
+SFWF2 <-select(SFWF0, Year, SFTotal)
+
+WFSBtots <-full_join(WFSBtots,SFWF2)
+WFSBtots <-WFSBtots[2:24,]
+
+Wftotslong <-pivot_longer(WFSBtots, cols=c("WFAge0",  "WFTotal", "SBTotal", "SFTotal"), names_to = "Age",values_to = "abundance")
+
+Wftotslong%>%
+ ggplot(aes(Year,abundance))+
+ geom_line()+ facet_wrap(~Age)+
+ theme_classic()
+```
+
+```{r}
+vars = colnames(WFSBtots[2:5])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = WFSBtots, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= -1, E = 4,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[1, 3]
+}
+
+ccm_matrix
+```
+

@@ -1,0 +1,33 @@
+---
+title: "mixed_age_Fall23"
+author: "tara"
+date: "10/3/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+#install.packages("devtools") #if required
+#devtools::install_github("tanyalrogers/GPEDM") #update frequently
+library(dplyr)
+library(tidyverse)
+library(purrr)
+library(ggplot2)
+library(rEDM)
+library(GPEDM)
+library(Metrics)
+library(kableExtra)
+library(corrplot)
+source("hierEDM_helper_functions.R")
+```
+
+**Load Data**  
+```{r}
+dmf_spring <- read.csv("data_WF_SNEMA/DMFSPRING_WFSNEMA.csv", header = TRUE)##MADMF Spring BTS mean numbers per tow, 7 is a plus group
+
+
+
+```

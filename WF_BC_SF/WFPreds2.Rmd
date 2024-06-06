@@ -1,0 +1,221 @@
+---
+title: "WFpreds2"
+author: "tara"
+date: "9/26/2023"
+output: html_document
+---
+
+This is a version of WFPreds.Rmd that we are using specifically for the SMAST talk on 10/4/23 - Sticking to striped bass and summer flounder. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(kableExtra)
+library(forcats)
+library(Metrics)
+library(tidyverse)
+library(purrr)
+library(rEDM)
+library(corrplot)
+#setwd("C:/Users/tdolan/Documents/R-Github/age_structureEDM")
+```
+
+**CTDEEP Striped bass data - I think this is the spring index? we need to find out. We would be interested in separately looking at fall and spring.** 
+```{r}
+#using CTSB indices for now
+CTSB <- read.csv("CTtrawlabundanceage19872017 copy.csv", header = TRUE)
+
+#we are getting rid of the 15+ category
+CTSB <-CTSB[,2:16]
+pop24 <-pivot_longer(CTSB, 2:15, names_to = "age_class")%>%mutate(age_class=as.factor(age_class),lNvalue=log(value))%>%as.data.frame()%>%mutate(age_class = fct_relevel(age_class, c("X1","X2","X3","X4","X5","X6","X7","X8","X9","X10","X11","X12","X13","X14")))
+
+#create an abundance index from all age classes
+popAll <-mutate(CTSB, N_total=X1+X2+X3+X4+X5+X5+X6+X7+X8+X9+X10+X11+X12+X13+X14)
+popAll <-mutate(popAll, Year=as.integer(Year))
+
+#make a vertical version of popALL which you will use later. 
+names(popAll)<-c("time_step","1","2","3","4","5","6","7","8","9","10","11","12","13","14","N_total")
+popvert <-as.data.frame(pivot_longer(popAll, 2:15, names_to = "age",values_to="abundance"))
+popvert <-popvert %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age) %>%as.data.frame()
+
+#Make a scaled dataset
+means <-colMeans(popAll[sapply(popAll, is.numeric)])
+stdevs <-popAll %>% summarise_if(is.numeric, sd)
+savescale <-as.data.frame(cbind(means,t(stdevs)))
+names(savescale)<-c("means","sd")
+savescale <-savescale[2:15,]
+popscale <-transmute_at(popAll,2:15, scale) 
+popscale <-rownames_to_column(popscale, var="time_step")
+
+#vertical scaled dataset
+popscv <-as.data.frame(pivot_longer(popscale, 2:15, names_to = "age",values_to="abundance"))
+popscv <-popscv %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age)%>%as.data.frame()
+```
+
+**CTDEEP Summer Flounder Data - Spring because correlated to early season.** 
+```{r}
+#1984-2012
+CTSF_spring <-read.csv("SF_spring_CTDEEP.csv", header = TRUE)
+
+#format the data
+#we are getting rid of the 15+ category
+CTSF <-CTSF_spring[,c(1,3:8)]
+popCTSF <-pivot_longer(CTSF, 2:7, names_to = "age_class")%>%mutate(age_class=as.factor(age_class),lNvalue=log(value))%>%as.data.frame()%>%mutate(age_class = fct_relevel(age_class, c("X1","X2","X3","X4","X5","X6")))
+
+#create an abundance index from all age classes
+popAllCTSF <-mutate(CTSF, N_total=X1+X2+X3+X4+X5+X5+X6)
+popAllCTSF <-mutate(popAllCTSF, Year=as.integer(Year))
+
+#make a vertical version of popALL which you will use later. 
+names(popAllCTSF)<-c("time_step","1","2","3","4","5","6","N_total")
+popvert_CTSF <-as.data.frame(pivot_longer(popAllCTSF, 2:8, names_to = "age",values_to="abundance"))
+popvert_CTSF <-popvert %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age) %>%as.data.frame()
+
+#Make a scaled dataset
+means <-colMeans(popAllCTSF[sapply(popAllCTSF, is.numeric)])
+stdevs <-popAllCTSF %>% summarise_if(is.numeric, sd)
+savescale <-as.data.frame(cbind(means,t(stdevs)))
+names(savescale)<-c("means","sd")
+savescale <-savescale[2:8,]
+popscaleCTSF <-transmute_at(popAllCTSF,2:8, scale) 
+popscaleCTSF <-rownames_to_column(popscaleCTSF, var="time_step")
+
+#vertical scaled dataset
+popscv_CTSF <-as.data.frame(pivot_longer(popscaleCTSF, 2:8, names_to = "age",values_to="abundance"))
+popscv_CTSF <-popscv_CTSF %>% mutate(time_step=as.numeric(time_step)) %>%
+                             group_by(time_step) %>% arrange(age)%>%as.data.frame()
+```
+
+**CTDEEP winter flounder YOY data**  
+```{r}
+#spring survey 1988-2016
+WFCTYOY <-read.csv("WF_CTYOY_matt.csv", header = TRUE)
+#age 0 shifted forward one year making it an age 1 index (according to Matt)
+WFCTYOY <-WFCTYOY[8:36,1:2]
+WFCTYOY <-mutate(WFCTYOY, age0 = lead(Total,1)) %>%select(-Total)#CAREFUL HERE 
+```
+
+**CTDEEP WF data**  
+```{r}
+WFCT <-read.csv("WF_CTDEEP_SPRING.csv", header = TRUE)
+```
+
+**Within CT, look at spring SF & SB to WF yoy** 
+```{r}
+#combine the datasets
+#not sure if we should use scaled datasets or not.
+popvert<-mutate(popvert, species="SB")
+popvert_CTSF <- mutate(popvert_CTSF, species="SF")
+ct_spring <- WFCTYOY %>% dplyr::rename(time_step=Year, abundance=age0)%>%
+  mutate(age="0",species="WF")%>% bind_rows(popvert)%>%bind_rows(popvert_CTSF)%>%
+  filter(time_step > 1987 & time_step < 2016)
+
+#Try first sum of all adult SB and SF compared to WFYOY
+WFCTYOY2 <-WFCTYOY %>% dplyr::rename(time_step=Year, WF=age0)
+ct_yoy_allAd <-pivot_wider(ct_spring, names_from = species, values_from = N_total)%>%
+  filter(age !="0")%>% select(-WF)%>%left_join(WFCTYOY2)%>%group_by(time_step)%>%
+  summarize(SB=mean(SB),SF=mean(SF),WF=mean(WF))
+
+
+#find embedding dimension
+rho_E <- EmbedDimension(dataFrame = ct_yoy_allAd, columns = c("SB","SF","WF"), target = "WF",lib = "1 28", pred = "1 28", showPlot = TRUE) 
+
+```
+We will use E=3
+
+```{r}
+vars = colnames(ct_yoy_allAd[2:4])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = ct_yoy_allAd, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= 1, E = 3,showPlot = TRUE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 2]
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 3]
+}
+
+ccm_matrix
+
+```
+
+Nothing promising here. 
+
+**every age of winter flounder against every age of SB in CT Spring**  
+I am not sure that spring is the best index for the sound because they will be up in the estuaries not out in the sound. 
+```{r}
+
+
+
+```
+
+**Peconics datasets**  
+```{r}
+
+
+```
+
+
+
+
+**Evaluate the correlation dredging study**  
+I am not sure this will work because the data appear to be scaled and we don't have the ability to unscale. 
+```{r}
+north_bays <-read.csv("northbays.csv", header = TRUE)%>%dplyr::rename(Survival=Survial, SF=SFRED, SST=SSTred)
+
+#find embedding dimension - do YOYEarly and YOYLate separately. 
+
+#YOYEarly
+rho_E <- EmbedDimension(dataFrame = north_bays, columns = c("YOYEarly","Survival","TaveE","TmaxE","TminE",
+            "TaveL","TmaxL","TminL","SST","SF","SB","BF","BC"), 
+            target = "YOYEarly",lib = "1 29", pred = "1 29", showPlot = TRUE) 
+
+#YOYLate
+rho_E <- EmbedDimension(dataFrame = north_bays, columns = c("YOYLATE","Survival","TaveE","TmaxE","TminE",
+            "TaveL","TmaxL","TminL","SST","SF","SB","BF","BC"), 
+            target = "YOYEarly",lib = "1 29", pred = "1 29", showPlot = TRUE) 
+
+#luckily E=3 works for both. - This also makes intuitive sense because age at maturity. 
+
+#make a regular correlation plot
+M <-cor(north_bays[,-1], use="pairwise.complete.obs")
+corrplot(M, type="upper", method="color", title="", mar=c(0,0,2,0), 
+         #addCoef.col = 'black', 
+         diag=F,tl.col = "black")
+
+#loop every combination
+vars = colnames(north_bays[2:15])
+var_pairs = combn(vars, 2) # Combinations of vars, 2 at a time
+
+libSize = paste(10, 100, 5, collapse = " ") #have a standard library size
+ccm_matrix = array(NA, dim = c(length(vars), length(vars)), dimnames = list(vars,vars)) 
+
+for (i in 1:ncol(var_pairs)) {
+ccm_out = CCM(dataFrame = north_bays, columns = var_pairs[1, i], target = var_pairs[2,i], 
+              libSizes = libSize, tau= 1, E = 3,showPlot = FALSE, sample=100,replacement=TRUE) 
+outVars = names(ccm_out)
+var_out = unlist(strsplit(outVars[2], ":")) 
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 2] #it should be the the coefficient at the max lib size not min!
+var_out = unlist(strsplit(outVars[3], ":"))
+ccm_matrix[var_out[2], var_out[1]] = ccm_out[nrow(ccm_out), 3] #it should be the the coefficient at the max lib size not min! or
+}
+
+corrplot(ccm_matrix, type="upper", method="circle", title="", mar=c(0,0,2,0), 
+         #addCoef.col = 'black', 
+         diag=F,tl.col = "black")
+ccm_matrix
+
+```
+
+
