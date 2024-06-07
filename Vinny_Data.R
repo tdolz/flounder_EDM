@@ -12,6 +12,7 @@ library(GPEDM)
 
 vin <- mdb.get(file="Beam_Trawl_DBASE.mdb")
 
+<<<<<<< HEAD
 
 ########################################### Data formatting and exploration ####################################################################
 #The different tables
@@ -73,3 +74,6 @@ preds <-c("BLUEFISH","WINTER FLOUNDER","SUMMER FLOUNDER", "STRIPED SEAROBIN","SP
 #Based on previous research, we're also interested in late and early season bottom temperatures, late and early season abundance. 
 early.szn <-mutate(enviro.data, month=format(as.Date(date,format="%Y-%m-%d"),"%m"))   
 
+=======
+#This is not working on my work machine
+>>>>>>> b01a01522797b16531d7dc69d472f3526490124b
