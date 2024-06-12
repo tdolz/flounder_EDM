@@ -165,3 +165,5 @@ AR3 <- arima(ts$Stratified.Mean, order = c(3,0,0))
 ts.plot(ts$Stratified.Mean)
 AR3_fit <- ts$Stratified.Mean - residuals(AR3)
 points(AR3_fit, type = "l", col = 2, lty = 2)
+
+
