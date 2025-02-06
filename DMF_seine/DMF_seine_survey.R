@@ -2,6 +2,9 @@
 library(tidyverse)
 library(GPEDM)
 library(readxl)
+library(gridExtra)
+library(rquery)
+library(Metrics)
 
 sites <-read.csv("DMF_seine/Dolan/1060_catch_76-23.csv",header=T)%>%
   mutate(estuary=fct_recode(as.factor(estuary), "Great Pond"="1", "Waquoit Bay"="2","Cotuit Bay"="3","Lewis Bay"="4","Bass River"="5","Stage Harbor"="6"))
@@ -60,7 +63,7 @@ by_site %>%
 
 #As of 6/7/24 we have access only to an annual index. 
 # Eventually include predators etc. 
-library(rquery)
+
 
 #load data
 s_annual <-read.csv("DMF_seine/seine survey yoy total annual index.csv", head=T)%>%
@@ -400,9 +403,8 @@ avtemp52$outsampfitstats
 avtemp91$outsampfitstats
 
 
-######################################################
-library(dplyr)
-library(ggplot2)
+##########################################################################################################
+
 
 vars_list <- names(lbyoy)[2:8]  # Extract variable names
 plist <- list()  # Initialize an empty list for plots of full data models
@@ -507,10 +509,312 @@ fsouttt <- fsouttt %>%
   mutate(across(where(is.numeric), ~ round(.x, 4)))
 print(fsouttt)
 
-library(gridExtra)
+
 # Arrange multiple ggplots in a grid (adjust `ncol` as needed)
 grid.arrange(grobs = plist, ncol = 3)
 grid.arrange(grobs = ttlist, ncol = 3)
+
+################################### Separately Plot A91 Febtemp and average temp.##################################################### 
+ts <- lbyoy[, c("Year", "AvDens", "avTemp","FebTemp")]
+lags91 <- makelags(data = ts, y = c("AvDens","avTemp","FebTemp"), E = 9, tau = 1)
+lags91 <- cbind(ts, lags91)
+lags91 <- lags91[, !duplicated(names(lags91))]
+temp91 <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[5:ncol(lags91)], predictmethod = "loo")
+
+#test/train version
+lags91_train<-filter(lags91, Year <=(max(lags91$Year)-5))#predicting 5 years. 
+lags91_test<-filter(lags91, Year >(max(lags91$Year)-5))
+temp91tt <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[5:ncol(lags91)], newdata=lags91_test,predictmethod = "loo")
+
+temp91tt$outsampfitstats
+
+res <- temp91$outsampresults %>% mutate(model = "m91")
+res$Year <- lbyoy$Year
+#test/train version - 5 years. 
+restt <- temp91tt$outsampresults %>% mutate(Year = 2019:2023,dataset="test",model = "m91")
+res_short = filter(lbyoy, Year < 2019 )%>%mutate(Year=as.numeric(Year), dataset="train")
+
+#Is this much better than an arima or moving average? Probably not. 
+#https://rpubs.com/JSHAH/481706 
+ts <-select(lbyoy, Year, AvDens)
+acf(ts$AvDens)
+AR1 <- arima(ts$AvDens, order = c(1,0,0))
+AR1_fit <- ts$AvDens - residuals(AR1)
+summary(AR1)
+AR2 <- arima(ts$AvDens, order = c(2,0,0))
+AR2_fit <- ts$AvDens - residuals(AR2)
+AR3 <- arima(ts$AvDens, order = c(3,0,0))
+AR3_fit <- ts$AvDens - residuals(AR3)
+
+ts.plot(ts$AvDens)
+points(AR1_fit, type = "l", col = "red", lty = 2)
+points(AR2_fit, type = "l", col = "blue", lty = 2)
+points(AR3_fit, type = "l", col = "green", lty = 2)
+
+#calculate R2 on the AR fits
+getR2(obs=ts$AvDens, pred=AR1_fit)
+getR2(obs=ts$AvDens, pred=AR2_fit)
+getR2(obs=ts$AvDens, pred=AR3_fit)
+rmse(actual=ts$AvDens,predicted=AR1_fit)
+rmse(actual=ts$AvDens,predicted=AR2_fit)
+rmse(actual=ts$AvDens,predicted=AR3_fit)
+
+ts$AR3 <-AR3_fit
+
+tsmean <-mean(res$obs)
+
+
+ggplot() +
+  geom_point(data=res,aes(x = Year, y = obs)) + #observed data, entire time series 
+  #geom_line(data=res,aes(x = Year, y = predmean),color = "#67a9cf")+
+  #geom_ribbon(data=res,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
+  #pred test/train
+  geom_hline(aes(yintercept=tsmean),linetype="dashed")+
+  #geom_point(data=restt,aes(x = Year, y = obs),color = "#67a9cf") + 
+  geom_line(data=ts,aes(x=Year,y=AR3,color="black",linetype="dotted"),color="black",linetype="dotted")+
+  geom_line(data=restt,aes(x = Year, y = predmean),color = "#67a9cf") +
+  geom_ribbon(data=restt,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
+  #facet_wrap(~model, scales = "free") +
+  ylab("Average Density of YOY")+
+  ggtitle("Train BT and Density 2007:2018, Predict: Density 2019-2023")+
+  scale_linetype_manual(
+    name = "Legend",
+    values = c("solid" = "solid", "dotted" = "dotted", "dashed" = "dashed"),
+    labels = c("GP Model", "AR3", "Mean Recruits")
+  ) +
+  scale_color_manual(
+    name = "Legend",
+    values = c("solid" = "#67a9cf", "dotted" = "black", "dashed" = "black"),
+    labels = c("GP Model", "AR3", "Mean Recruits")
+  ) +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+
+
+
+
+
+#########################Annual index and all BT data #################################################
+
+##BT data
+bt <- read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Site Information")
+bb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="BB Barge_Tower")
+bc <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Buz_Cleveland_Ledge")
+mr <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="CCB_WRECK_OF_MARS")
+brm <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="BOS_ROMANCE_MARTINS")
+crp <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="CCB_RCKY_POINT")
+lb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Lewis_Bay")
+wb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Waquoit_Bay")
+
+temp_mon <-bind_rows(bb,bc,mr,brm,crp,lb,wb)%>% mutate(Date= as.Date(Date), Time=format(Time, "%H:%M:%S"))%>%
+  separate(Date,into=c("Year","Month","Day"),sep="-", remove=FALSE)%>%mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))
+
+#temp_mon %>%
+ # ggplot(aes(Date,TempC))+geom_point()+
+ # facet_wrap(~Location)+theme_classic()
+
+#temp_mon cleaning 
+thresholds <-data.frame(
+  Location=unique(temp_mon$Location)[1:6],
+  Year_min =c(1989,1992,1993,1990,1992,2007),
+  Year_max =c(2022,2022,2022,2022,2023,2022))
+#honestly there is a case for subsetting 1993-2022 and eliminating lewis bay as well. 
+
+filtered_temp <- temp_mon %>%
+  left_join(thresholds, by = "Location") %>%
+  filter(Year >= Year_min & Year <= Year_max)
+
+temps <- filtered_temp %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%full_join(filtered_temp)%>%mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
+
+#temps %>%
+ # ggplot(aes(Date,MeanDailyTemp))+geom_point()+
+ # facet_wrap(~Location)+theme_classic()
+
+#Create temperature indices
+annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
+annual_temp %>%
+  ggplot(aes(Year,MeanAT))+geom_point()+
+  facet_wrap(~Location)+theme_classic()
+
+Monthly_temp <-temps %>%group_by(Location, Year, Month)%>% summarise(MeanMT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
+Monthly_temp %>%
+  ggplot(aes(Year,MeanMT))+geom_point()+
+  facet_grid(Month~Location)+theme_bw()
+
+s_annual <-read.csv("DMF_seine/seine survey yoy total annual index.csv", head=T)%>%
+  select(-X)%>%mutate(logmean=log(Stratified.Mean))
+
+at<-s_annual[,1:2]%>%mutate(Year=as.character(Year))%>%left_join(annual_temp)
+
+at%>%
+  filter(!is.na(Location))%>%
+  ggplot(aes(MeanAT,Stratified.Mean))+
+  geom_point()+
+  facet_wrap(~Location, scales="free_x")+
+  geom_smooth(method = "lm", se = FALSE, color = "black")+
+  theme_bw()
+
+#South Shore Temp
+south_temp <-filtered_temp%>%
+  filter(Location %in% c("BB BARGE_TOWER", "BUZ CLEVELAND LEDGE"))%>% #leaving out Waquoit Bay and Lewis Bay for now so we get the longest time series.  
+  filter(Year > 1991 & Year < 2023)%>% # 1992-2022
+  left_join(at)
+
+#a simplified south shore temp
+sat <-at%>% filter(Location %in% c("BB BARGE_TOWER", "BUZ CLEVELAND LEDGE"))%>% #leaving out Waquoit Bay and Lewis Bay for now so we get the longest time series.  
+               filter(Year > 1991 & Year < 2023)%>%pivot_wider(names_from = Location,values_from = MeanAT)
+
+
+#Fits across a grid of E and Tau
+Ees <-seq(1,10,1)
+taus <-seq(1,3,1)
+var_pairs = expand.grid(Ees, taus) # Combinations of vars, 2 at a time
+ETdf <-matrix(nrow=dim(var_pairs)[1],ncol=4)
+ETdf[,1]<-var_pairs[,1]
+ETdf[,2]<-var_pairs[,2]
+r2matrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+rmsematrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
+for (i in 1:nrow(var_pairs)) {
+  try({
+    #lagssb <-makelags(data=sat, y="Stratified.Mean",E=var_pairs[i,1], tau=var_pairs[i,2])
+    lagssb <-makelags(data=sat, y=c("Stratified.Mean","BB BARGE_TOWER","BUZ CLEVELAND LEDGE"),E=var_pairs[i,1], tau=var_pairs[i,2])
+    #lagssb <-makelags(data=sat, y=c("Stratified.Mean","BUZ CLEVELAND LEDGE"),E=var_pairs[i,1], tau=var_pairs[i,2])
+    lagssb <- cbind(sat, lagssb)
+    fitSB <-fitGP(data = lagssb, y = "Stratified.Mean",x=names(lagssb)[5:length(names(lagssb))],scaling = "local",predictmethod = "loo")
+    fitSB_r2 <-fitSB$outsampfitstats[[1]]
+    fitSB_rmse <-fitSB$outsampfitstats[[2]]
+    r2matrixSB[var_pairs[i,1], var_pairs[i,2]] = fitSB_r2
+    ETdf[i,3] <-fitSB_r2
+    ETdf[i,4] <-fitSB_rmse
+    rmsematrixSB[var_pairs[i,1], var_pairs[i,2]] = fitSB_rmse
+  },silent=T)
+}
+r2matrixSB
+rmsematrixSB
+
+#let's try lags of both stations Tau = 1, E=7, better scores can be achieved.... and Tau = 3, e=8
+
+mtempbb <-filter(Monthly_temp, Location=="BB BARGE_TOWER")%>%pivot_wider(names_from = Month,values_from = MeanMT)
+names(mtempbb)[3:14]<-c("JanBB","FebBB","MarBB","AprBB","MayBB","JunBB","JulBB","AugBB","SepBB","OctBB","NovBB","DecBB")
+mtempbuz  <-filter(Monthly_temp, Location=="BUZ CLEVELAND LEDGE")%>%pivot_wider(names_from = Month,values_from = MeanMT)
+names(mtempbuz)[3:14]<-c("JanBZ","FebBZ","MarBZ","AprBZ","MayBZ","JunBZ","JulBZ","AugBZ","SepBZ","OctBZ","NovBZ","DecBZ")
+mtempsouth <-full_join(mtempbb[,-1],mtempbuz[,-1])
+#tbh i feel like the BZ dataset is unreliable... 
+
+mtempbb<-right_join(sat,mtempbb)%>%select(-Location)%>%filter(Year>1992)%>%mutate(Year=as.numeric(Year))
+
+vars_list <- names(mtempbb)[2:16]  # Extract variable names
+plist <- list()  # Initialize an empty list for plots of full data models
+ttlist <-list() #list for plots of test/train models
+fsout <- data.frame(var = character(), fit71_r2 = numeric(), fit71_rmse = numeric(), fit83_r2 = numeric(), fit83_rmse = numeric(), stringsAsFactors = FALSE)
+fsouttt <- data.frame(var = character(), fit71_r2 = numeric(), fit71_rmse = numeric(), fit83_r2 = numeric(), fit83_rmse = numeric(), stringsAsFactors = FALSE)
+
+for (i in 1:length(vars_list)) {
+  var_name <- vars_list[i]
+  
+  # Correct column selection
+  ts <- mtempbb[, c("Year", "Stratified.Mean", var_name)]
+  
+  # Ensure correct variable selection for makelags
+  #lags83 <- makelags(data = ts, y = "Stratified.Mean", E = 9, tau = 1)
+  lags83 <- makelags(data = ts, y = c("Stratified.Mean",var_name), E = 8, tau = 3)
+  lags83 <- cbind(ts, lags83)
+  lags83 <- lags83[, !duplicated(names(lags83))]
+  temp83 <- fitGP(data = lags83, y = "Stratified.Mean", x = names(lags83)[3:ncol(lags83)], predictmethod = "loo")
+  
+  #test/train version
+  #lags83_train<-filter(lags83, Year <=(max(lags83$Year)-3))#predicting 3 years. 
+  #lags83_test<-filter(lags83, Year >(max(lags83$Year)-3))
+  lags83_train<-filter(lags83, Year <=(max(lags83$Year)-5))#predicting 5 years. 
+  lags83_test<-filter(lags83, Year >(max(lags83$Year)-5))
+  temp83tt <- fitGP(data = lags83, y = "Stratified.Mean", x = names(lags83)[3:ncol(lags83)], newdata=lags83_test,predictmethod = "loo")
+  
+  #lags71 <- makelags(data = ts, y = "Stratified.Mean", E = 5, tau = 2)
+  lags71 <- makelags(data = ts, y = c("Stratified.Mean",var_name), E = 7, tau = 1)
+  lags71 <- cbind(ts, lags71)
+  lags71 <- lags71[, !duplicated(names(lags71))]
+  temp71 <- fitGP(data = lags71, y = "Stratified.Mean", x = names(lags71)[3:ncol(lags71)], predictmethod = "loo")
+  
+  #test/train version
+  #lags71_train<-filter(lags71, Year <=(max(lags71$Year)-3))#predicting 3 years. 
+  #lags71_test<-filter(lags71, Year >(max(lags71$Year)-3))
+  lags71_train<-filter(lags71, Year <=(max(lags71$Year)-5))#predicting 5 years. 
+  lags71_test<-filter(lags71, Year >(max(lags71$Year)-5))
+  temp71tt <- fitGP(data = lags71, y = "Stratified.Mean", x = names(lags71)[3:ncol(lags71)], newdata=lags71_test,predictmethod = "loo")
+  
+  # output and label results for straight model
+  m71.res <- temp71$outsampresults %>% mutate(model = "m71")
+  m83.res <- temp83$outsampresults %>% mutate(model = "m83")
+  res <- bind_rows(m71.res, m83.res)
+  res$Year <- mtempbb$Year
+  
+  #test/train version - 3 years. 
+  #m71.restt <- temp71tt$outsampresults %>% mutate(Year = 2021:2023,dataset="test", model = "m71")
+  #m83.restt <- temp83tt$outsampresults %>% mutate(Year = 2021:2023,dataset="test",model = "m83")
+  #restt <- bind_rows(m71.restt, m83.restt)%>%mutate(Year=as.numeric(Year))%>%arrange(Year)
+  #res_short = filter(lbyoy, Year < 2021 )%>%mutate(Year=as.numeric(Year), dataset="train")
+  
+  #test/train version - 5 years. 
+  m71.restt <- temp71tt$outsampresults %>% mutate(Year = 2019:2023,dataset="test", model = "m71")
+  m83.restt <- temp83tt$outsampresults %>% mutate(Year = 2019:2023,dataset="test",model = "m83")
+  restt <- bind_rows(m71.restt, m83.restt)%>%mutate(Year=as.numeric(Year))%>%arrange(Year)
+  res_short = filter(mtempbb, Year < 2019 )%>%mutate(Year=as.numeric(Year), dataset="train")
+  
+  
+  #Plot results
+  plot <- res %>% ggplot() +
+    facet_wrap(~model, scales = "free") + geom_line(aes(x = Year, y = predmean)) +  # out-of-sample
+    geom_ribbon(aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd), alpha = 0.4) +  # out-of-sample
+    geom_point(aes(x = Year, y = obs)) +
+    ggtitle(var_name) + theme_classic()
+  plist[[i]] <- plot
+  
+  #test train version
+  plot2 <- ggplot() +
+    geom_point(data=res,aes(x = Year, y = obs)) + #observed data, entire time series 
+    #pred test/train
+    geom_point(data=restt,aes(x = Year, y = obs)) + #observed data, entire time series 
+    geom_line(data=restt,aes(x = Year, y = predmean),linetype="dotted") +
+    geom_ribbon(data=restt,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4) +  # out-of-sample
+    facet_wrap(~model, scales = "free") +
+    ggtitle(var_name) + theme_classic()
+  ttlist[[i]] <- plot2
+  
+  # output fitstats for the full ts model. 
+  fsout <- rbind(fsout, data.frame(
+    var = var_name,
+    fit71_r2 = temp71$outsampfitstats[1],
+    fit71_rmse = temp71$outsampfitstats[2],
+    fit83_r2 = temp83$outsampfitstats[1],
+    fit83_rmse = temp83$outsampfitstats[2]
+  ))
+  #output fitstats for the test/train model
+  fsouttt <- rbind(fsouttt, data.frame(
+    var = var_name,
+    fit71_r2 = temp71tt$outsampfitstats[1],
+    fit71_rmse = temp71tt$outsampfitstats[2],
+    fit83_r2 = temp83tt$outsampfitstats[1],
+    fit83_rmse = temp83tt$outsampfitstats[2]
+  ))
+}
+
+# View results
+fsout <- fsout %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+print(fsout)
+fsouttt <- fsouttt %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+print(fsouttt)
+
+
+# Arrange multiple ggplots in a grid (adjust `ncol` as needed)
+grid.arrange(grobs = plist, ncol = 3)
+grid.arrange(grobs = ttlist, ncol = 3)
+
+
+###### instead of predicting the Seine survey, let's predict the NMFS DMF age 1 index... if i have it.... 
+#### 
 
 
 
