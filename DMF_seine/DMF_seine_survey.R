@@ -288,8 +288,8 @@ r2matrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,t
 rmsematrixSB = array(NA, dim = c(length(Ees), length(taus)), dimnames = list(Ees,taus)) 
 for (i in 1:nrow(var_pairs)) {
   try({
-    lags <-makelags(data=ts,y="AvDens",E=var_pairs[i,1], tau=var_pairs[i,2])
-    lags <-cbind(ts,lags)
+    lags <-makelags(data=lbyoy,y="AvDens",E=var_pairs[i,1], tau=var_pairs[i,2])
+    lags <-cbind(lbyoy,lags)
     fitSB <-fitGP(data = lags, y = "AvDens", x=names(lags)[3:ncol(lags)],predictmethod = "loo")
     #fitSB <-fitGP(data = lbyoy, y = "AvDens",scaling = "global", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
     #fitSB <-fitGP(data = sa_short, y = "Stratified.Mean",scaling = "local", E=var_pairs[i,1], tau=var_pairs[i,2], predictmethod = "loo")
@@ -430,7 +430,7 @@ for (i in 1:length(vars_list)) {
   #lags91_test<-filter(lags91, Year >(max(lags91$Year)-3))
   lags91_train<-filter(lags91, Year <=(max(lags91$Year)-5))#predicting 5 years. 
   lags91_test<-filter(lags91, Year >(max(lags91$Year)-5))
-  temp91tt <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[3:ncol(lags91)], newdata=lags91_test,predictmethod = "loo")
+  temp91tt <- fitGP(data = lags91_train, y = "AvDens", x = names(lags91_train)[3:ncol(lags91)], newdata=lags91_test,predictmethod = "loo")
   
   #lags52 <- makelags(data = ts, y = "AvDens", E = 5, tau = 2)
   lags52 <- makelags(data = ts, y = c("AvDens",var_name), E = 5, tau = 2)
@@ -443,7 +443,7 @@ for (i in 1:length(vars_list)) {
   #lags52_test<-filter(lags52, Year >(max(lags52$Year)-3))
   lags52_train<-filter(lags52, Year <=(max(lags52$Year)-5))#predicting 5 years. 
   lags52_test<-filter(lags52, Year >(max(lags52$Year)-5))
-  temp52tt <- fitGP(data = lags52, y = "AvDens", x = names(lags52)[3:ncol(lags52)], newdata=lags52_test,predictmethod = "loo")
+  temp52tt <- fitGP(data = lags52_train, y = "AvDens", x = names(lags52_train)[3:ncol(lags52)], newdata=lags52_test,predictmethod = "loo")
   
   # output and label results for straight model
   m52.res <- temp52$outsampresults %>% mutate(model = "m52")
@@ -521,18 +521,30 @@ lags91 <- cbind(ts, lags91)
 lags91 <- lags91[, !duplicated(names(lags91))]
 temp91 <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[5:ncol(lags91)], predictmethod = "loo")
 
+#fit to density only. 
+dens91 <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[5:13], predictmethod = "loo")
+
 #test/train version
 lags91_train<-filter(lags91, Year <=(max(lags91$Year)-5))#predicting 5 years. 
 lags91_test<-filter(lags91, Year >(max(lags91$Year)-5))
-temp91tt <- fitGP(data = lags91, y = "AvDens", x = names(lags91)[5:ncol(lags91)], newdata=lags91_test,predictmethod = "loo")
+temp91tt <- fitGP(data = lags91_train, y = "AvDens", x = names(lags91_train)[5:ncol(lags91)], newdata=lags91_test,predictmethod = "loo", time="Year")
 
+#predict sequential version
+temp91tt_update=predict_seq(temp91tt,newdata=lags91_test)
+temp91tt_update$outsampfitstats
+
+dens91$outsampfitstats
+temp91$outsampfitstats
 temp91tt$outsampfitstats
 
-res <- temp91$outsampresults %>% mutate(model = "m91")
+res <- temp91$outsampresults %>% mutate(model = "dens_febBT_avBT")
+res2 <-dens91$outsampresults %>% mutate(model ="densonly")
 res$Year <- lbyoy$Year
+res2$Year <-lbyoy$Year
 #test/train version - 5 years. 
-restt <- temp91tt$outsampresults %>% mutate(Year = 2019:2023,dataset="test",model = "m91")
-res_short = filter(lbyoy, Year < 2019 )%>%mutate(Year=as.numeric(Year), dataset="train")
+restt <- temp91tt$outsampresults %>% mutate(Year = 2019:2023,model = "test")
+res3 <-bind_rows(res,res2,restt)
+
 
 #Is this much better than an arima or moving average? Probably not. 
 #https://rpubs.com/JSHAH/481706 
@@ -565,30 +577,21 @@ tsmean <-mean(res$obs)
 
 
 ggplot() +
-  geom_point(data=res,aes(x = Year, y = obs)) + #observed data, entire time series 
-  #geom_line(data=res,aes(x = Year, y = predmean),color = "#67a9cf")+
-  #geom_ribbon(data=res,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
+  geom_line(data=res2,aes(x = Year, y = predmean),color = "#555555")+
+  geom_ribbon(data=res2,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "gray") +  # out-of-sample
+  geom_line(data=res,aes(x = Year, y = predmean),color = "#67a9cf")+
+  geom_ribbon(data=res,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
   #pred test/train
   geom_hline(aes(yintercept=tsmean),linetype="dashed")+
   #geom_point(data=restt,aes(x = Year, y = obs),color = "#67a9cf") + 
   geom_line(data=ts,aes(x=Year,y=AR3,color="black",linetype="dotted"),color="black",linetype="dotted")+
-  geom_line(data=restt,aes(x = Year, y = predmean),color = "#67a9cf") +
-  geom_ribbon(data=restt,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
-  #facet_wrap(~model, scales = "free") +
+  #geom_line(data=restt,aes(x = Year, y = predmean),color = "#67a9cf") +
+  #geom_ribbon(data=restt,aes(x = Year, y = predmean, ymin = predmean - predfsd, ymax = predmean + predfsd),alpha = 0.4, fill = "#67a9cf") +  # out-of-sample
+  geom_point(data=res,aes(x = Year, y = obs)) + #observed data, entire time series 
+  #fitted to entire time series
   ylab("Average Density of YOY")+
-  ggtitle("Train BT and Density 2007:2018, Predict: Density 2019-2023")+
-  scale_linetype_manual(
-    name = "Legend",
-    values = c("solid" = "solid", "dotted" = "dotted", "dashed" = "dashed"),
-    labels = c("GP Model", "AR3", "Mean Recruits")
-  ) +
-  scale_color_manual(
-    name = "Legend",
-    values = c("solid" = "#67a9cf", "dotted" = "black", "dashed" = "black"),
-    labels = c("GP Model", "AR3", "Mean Recruits")
-  ) +
-  theme_classic() +
-  theme(legend.position = "bottom")
+  #ggtitle("Train BT and Density 2007:2018, Predict: Density 2019-2023")+
+  theme_classic()
 
 
 
@@ -741,7 +744,7 @@ for (i in 1:length(vars_list)) {
   #lags71_test<-filter(lags71, Year >(max(lags71$Year)-3))
   lags71_train<-filter(lags71, Year <=(max(lags71$Year)-5))#predicting 5 years. 
   lags71_test<-filter(lags71, Year >(max(lags71$Year)-5))
-  temp71tt <- fitGP(data = lags71, y = "Stratified.Mean", x = names(lags71)[3:ncol(lags71)], newdata=lags71_test,predictmethod = "loo")
+  temp71tt <- fitGP(data = lags71train, y = "Stratified.Mean", x = names(lags71)[3:ncol(lags71)], newdata=lags71_test,predictmethod = "loo")
   
   # output and label results for straight model
   m71.res <- temp71$outsampresults %>% mutate(model = "m71")
