@@ -15,11 +15,12 @@ site_info <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massac
 register_google(key="AIzaSyAJnNWzhDwco0BIRpEgi9I_93dx6FZNMKA", account_type = "standard")
 
 #get the basemap
-MA <- "Boston"
+MA <- "Plymouth, MA"
 #overview map
 SNEmap <- get_map(MA, zoom = 8, source="google", maptype="terrain", color="bw",crop=FALSE)
 ggmap(SNEmap)+
-  geom_point(aes(x=LONDD, y=LATDD, color=`Depth (feet) at MLW unless otherwise noted`), data=site_info)
+  geom_point(aes(x=LONDD, y=LATDD, color=`Depth (feet) at MLW unless otherwise noted`), data=site_info)+
+  scale_color_viridis_b()
 
 #get the basemap
 #MA <- "Portland, ME"
@@ -41,50 +42,143 @@ wb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts
 temp_mon <-bind_rows(bb,bc,mr,brm,crp,lb,wb)%>% mutate(Date= as.Date(Date), Time=format(Time, "%H:%M:%S"))%>%
   separate(Date,into=c("Year","Month","Day"),sep="-", remove=FALSE)%>%mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))
 
-#temp_mon cleaning 
-thresholds <-data.frame(
-  Location=unique(temp_mon$Location)[1:6],
-  Year_min =c(1989,1992,1993,1990,1992,2007),
-  Year_max =c(2022,2022,2022,2022,2023,2022))
-#honestly there is a case for subsetting 1993-2022 and eliminating lewis bay as well. 
+# Function to calculate mode
+mode_value <- function(x) {
+  tab <- table(x)
+  as.numeric(names(tab)[which.max(tab)])
+}
 
-filtered_temp <- temp_mon %>%
-  left_join(thresholds, by = "Location") %>%
-  filter(Year >= Year_min & Year <= Year_max)
+# Summarize data
+summary_temp <- temp_mon %>%
+  group_by(Location) %>%
+  summarize(
+    min_Year = min(Year, na.rm = TRUE),  # Minimum Year
+    max_Year = max(Year, na.rm = TRUE),  # Maximum Year
+    na_count = sum(is.na(TempC)),  # Count of NA values in TempC
+    mean_TempC = mean(TempC, na.rm = TRUE),  # Mean of TempC
+    median_TempC = median(TempC, na.rm = TRUE),  # Median of TempC
+    mode_TempC = mode_value(TempC)  # Mode of TempC
+  )
 
-temps <- filtered_temp %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%full_join(filtered_temp)%>%mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
+print(summary_temp)
 
-#temps %>%
-# ggplot(aes(Date,MeanDailyTemp))+geom_point()+
-# facet_wrap(~Location)+theme_classic()
+temp_mon %>%
+ggplot(aes(Date,TempC))+geom_point()+
+facet_wrap(~Location, scales="free_y")+theme_classic()
+
+temps <- temp_mon %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%
+  full_join(temp_mon)%>%
+  mutate(MeanDailyTemp=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))%>%
+  mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
 
 #Create temperature indices
 annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
 annual_temp %>%
   ggplot(aes(Year,MeanAT))+geom_point()+
-  facet_wrap(~Location)+theme_classic()
+  facet_wrap(~Location, scales="free_y")+theme_classic()
+
+#temp_mon cleaning 
+thresholds <-data.frame(
+  Location=unique(temp_mon$Location)[1:6],
+  Year_min =c(1989,1992,1993,1990,1992,2007),
+  Year_max =c(2022,2022,2022,2022,2023,2022))
+
+filtered_temp <- temp_mon %>%
+  left_join(thresholds, by = "Location") %>%
+  filter(Year >= Year_min & Year <= Year_max)%>%
+  mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))
+
+temps <- filtered_temp %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%
+  full_join(filtered_temp)%>%
+  mutate(MeanDailyTemp=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))%>%
+  mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
+
+#Create temperature indices
+annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
+annual_temp %>%
+  ggplot(aes(Year,MeanAT))+geom_point()+
+  facet_wrap(~Location, scales="free_y")+theme_classic()
 
 Monthly_temp <-temps %>%group_by(Location, Year, Month)%>% summarise(MeanMT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
+
 Monthly_temp %>%
   ggplot(aes(Year,MeanMT))+geom_point()+
   facet_grid(Month~Location)+theme_bw()
 
+### How many NA are present in TempC? 
+count_NA <-filtered_temp%>%group_by(Location,Year)%>%summarize(na_num=sum(is.na(TempC)), val_count=sum(!is.na(TempC)),.groups="keep")
+
+count_NA %>%
+  ggplot(aes(x = Year, y = na_num, fill = Location)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Year", y = "Number of NAs", title = "NA Count by Year and Location") +
+  theme_minimal()
+
+### How many 0 are present in TempC? 
+count0 <-filtered_temp%>%group_by(Location,Year)%>%summarize(zero_num=sum(TempC==0),.groups="keep")
+
+count0 %>%
+  ggplot(aes(x = Year, y = zero_num, fill = Location)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Year", y = "Number of 0s", title = "0 Count by Year and Location") +
+  theme_minimal()
+
+
 # CDF plots? & distributions of the data. 
 
-filtered_temp%>%
-  ggplot(aes(x = MeanDailyTemp)) +
+#thresholds
+egg_max = 10
+larvae_min = 2
+larvae_max = 20
+YOY_max = 27
+Juv_min=8
+Juv_pref=18.5
+Juv_max = 27
+Adults_leave = 15
+adult_pref = 13.5
+adult_spring_prefmin_NEFSC = 4
+adult_spring_prefmax_NEFSC = 6
+adult_fall_prefmin_NEFSC = 10
+adult_fall_prefmax_NEFSC = 15
+adult_spring_prefmin_dmf = 5
+adult_spring_prefmax_dmf = 13
+adult_fall_prefmin_dmf = 9
+adult_fall_prefmax_dmf = 13
+
+filtered_temp2 <-filter(filtered_temp, Year> 1993 & Location %in% c("LEWIS BAY","BB BARGE_TOWER","BOS ROMANCE_MARTINS","CCB RCKY POINT"))
+
+filtered_temp2%>%
+  ggplot(aes(x = TempC)) +
   geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
-  facet_wrap(~Location)+
-  #geom_vline(aes(xintercept = unrelated), color = "black", linetype = "dashed", size = 0.5) + #the estimated mean value for unrelated in the simulation
-   labs(x = "Mean Daily Temperature C", y = "number of observations")+
+  #geom_vline(aes(xintercept = egg_max), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
   theme_bw()
 
-#need to calculate a mean daily temperature for Lewis bay and reinput that back into filtered_temp
+# Summarize data
+summary_temp <- filtered_temp2 %>%
+  group_by(Location) %>%
+  summarize(
+    min_Year = min(Year, na.rm = TRUE),  # Minimum Year
+    max_Year = max(Year, na.rm = TRUE),  # Maximum Year
+    na_count = sum(is.na(TempC)),  # Count of NA values in TempC
+    obs_count =sum(!is.na(TempC)),
+    mean_TempC = mean(TempC, na.rm = TRUE),  # Mean of TempC
+    median_TempC = median(TempC, na.rm = TRUE),  # Median of TempC
+    mode_TempC = mode_value(TempC)  # Mode of TempC
+  )
+print(summary_temp)
 
-
-Monthly_extremes <-group_by(Month,Year,Location)
-
-Annual_extremes
+#Egg temp
+filtered_temp2%>%
+  filter(Month %in% c("02","03","04","05"))%>%
+  ggplot(aes(x = TempC)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  geom_vline(aes(xintercept = egg_max), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_grid(Month~Location)+
+  #facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
 
 
 
