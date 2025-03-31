@@ -10,6 +10,10 @@ library("ggmap")
 ### site information ####
 site_info <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\Time series\\Site Index_3.15.24.xlsx",sheet="Temp Monitors - Site Index")
 
+site_info %>% group_by(Status)%>%summarize(count=n_distinct(Name))
+
+#site_info %>%( depth_bins = cut(`Depth (feet) at MLW unless otherwise noted`, breaks=seq(0,120,10)))%>%group_by(depth_bins)%>%summarize(count=n_distinct(Name))
+
 ### Create the site map ####
 #REGISTER THE API KEY! 
 register_google(key="AIzaSyAJnNWzhDwco0BIRpEgi9I_93dx6FZNMKA", account_type = "standard")
@@ -20,14 +24,17 @@ MA <- "Plymouth, MA"
 SNEmap <- get_map(MA, zoom = 8, source="google", maptype="terrain", color="bw",crop=FALSE)
 ggmap(SNEmap)+
   geom_point(aes(x=LONDD, y=LATDD, color=`Depth (feet) at MLW unless otherwise noted`), data=site_info)+
-  scale_color_viridis_b()
+  #scale_color_viridis_b()
+  scale_colour_binned(type = "viridis",
+                      breaks=seq(0,120,10),
+                      limits = c(0, 120),
+                      guide = guide_coloursteps(even.steps = FALSE,
+                                                show.limits = TRUE))
 
 #get the basemap
 #MA <- "Portland, ME"
 #bbox1 <- c(left = -74.568967, bottom = 40.058769, right = -67.010374, top = 44.713204)
 #SNEmap <-get_map(bbox1, source="google", maptype="terrain",zoom=6, color="bw",crop=TRUE) 
-
-
 
 ####BT data####
 bt <- read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Site Information")
@@ -45,8 +52,7 @@ temp_mon <-bind_rows(bb,bc,mr,brm,crp,lb,wb)%>% mutate(Date= as.Date(Date), Time
 # Function to calculate mode
 mode_value <- function(x) {
   tab <- table(x)
-  as.numeric(names(tab)[which.max(tab)])
-}
+  as.numeric(names(tab)[which.max(tab)])}
 
 # Summarize data
 summary_temp <- temp_mon %>%
@@ -62,14 +68,13 @@ summary_temp <- temp_mon %>%
 
 print(summary_temp)
 
-temp_mon %>%
-ggplot(aes(Date,TempC))+geom_point()+
-facet_wrap(~Location, scales="free_y")+theme_classic()
+#temp_mon %>%
+#ggplot(aes(Date,TempC))+geom_point()+
+#facet_wrap(~Location, scales="free_y")+theme_classic()
 
-temps <- temp_mon %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%
+temps <- temp_mon %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),MedDT=median(TempC, na.omit=T).groups="keep")%>%
   full_join(temp_mon)%>%
-  mutate(MeanDailyTemp=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))%>%
-  mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
+  mutate(MeanDT_imputed=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))
 
 #Create temperature indices
 annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
@@ -83,45 +88,20 @@ thresholds <-data.frame(
   Year_min =c(1989,1992,1993,1990,1992,2007),
   Year_max =c(2022,2022,2022,2022,2023,2022))
 
-filtered_temp <- temp_mon %>%
+filtered_temp <- temps %>%
   left_join(thresholds, by = "Location") %>%
   filter(Year >= Year_min & Year <= Year_max)%>%
   mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))
 
-temps <- filtered_temp %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),.groups="keep")%>%
-  full_join(filtered_temp)%>%
-  mutate(MeanDailyTemp=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))%>%
-  mutate(MeanDailyTemp=coalesce(MeanDailyTemp,MeanDT))
-
-#Create temperature indices
-annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
-annual_temp %>%
-  ggplot(aes(Year,MeanAT))+geom_point()+
-  facet_wrap(~Location, scales="free_y")+theme_classic()
-
-Monthly_temp <-temps %>%group_by(Location, Year, Month)%>% summarise(MeanMT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
-
-Monthly_temp %>%
-  ggplot(aes(Year,MeanMT))+geom_point()+
-  facet_grid(Month~Location)+theme_bw()
-
 ### How many NA are present in TempC? 
 count_NA <-filtered_temp%>%group_by(Location,Year)%>%summarize(na_num=sum(is.na(TempC)), val_count=sum(!is.na(TempC)),.groups="keep")
-
-count_NA %>%
-  ggplot(aes(x = Year, y = na_num, fill = Location)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(x = "Year", y = "Number of NAs", title = "NA Count by Year and Location") +
-  theme_minimal()
+count_NA %>% ggplot(aes(x = Year, y = na_num, fill = Location)) + geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Year", y = "Number of NAs", title = "NA Count by Year and Location") + theme_minimal()
 
 ### How many 0 are present in TempC? 
 count0 <-filtered_temp%>%group_by(Location,Year)%>%summarize(zero_num=sum(TempC==0),.groups="keep")
-
-count0 %>%
-  ggplot(aes(x = Year, y = zero_num, fill = Location)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(x = "Year", y = "Number of 0s", title = "0 Count by Year and Location") +
-  theme_minimal()
+count0 %>% ggplot(aes(x = Year, y = zero_num, fill = Location)) + geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "Year", y = "Number of 0s", title = "0 Count by Year and Location") +theme_minimal()
 
 
 # CDF plots? & distributions of the data. 
@@ -155,6 +135,9 @@ filtered_temp2%>%
   labs(x = "Temperature C", y = "number of observations")+
   theme_bw()
 
+filtered_temp2%>%
+  ggplot(aes(x=))
+
 # Summarize data
 summary_temp <- filtered_temp2 %>%
   group_by(Location) %>%
@@ -175,11 +158,56 @@ filtered_temp2%>%
   ggplot(aes(x = TempC)) +
   geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
   geom_vline(aes(xintercept = egg_max), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
-  facet_grid(Month~Location)+
+  facet_grid(Location~Month, scales="free_y")+
   #facet_wrap(~Location, scales="free_y")+
   labs(x = "Temperature C", y = "number of observations")+
   theme_bw()
 
+#larvae temp
+filtered_temp2%>%
+  filter(Month %in% c("03","04","05","06","07","08"))%>%
+  ggplot(aes(x = TempC)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  geom_vline(aes(xintercept = larvae_min), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  geom_vline(aes(xintercept = larvae_max), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_grid(Location~Month, scales="free_y")+
+  #facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
 
+#yoy temp
+filtered_temp2%>%
+  filter(Month %in% c("04","05","06","07","08","09","10"))%>%
+  ggplot(aes(x = TempC)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  geom_vline(aes(xintercept = YOY_max), color = "black", linetype = "dashed", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  geom_vline(aes(xintercept = 25), color = "black", linetype = "dotted", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_grid(Location~Month, scales="free_y")+
+  #facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
 
+#juvenile temp
+filtered_temp2%>%
+  #filter(Month %in% c("04","05","06","07","08","09","10"))%>%
+  ggplot(aes(x = TempC)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  geom_vline(aes(xintercept = Juv_min), color = "black", linetype = "dotted", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  geom_vline(aes(xintercept = Juv_pref), color = "black", linetype = "dashed", linewidth = 0.7) + #the estimated mean value for unrelated in the simulation
+  geom_vline(aes(xintercept = Juv_max), color = "black", linetype = "dotted", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_grid(Location~Month, scales="free_y")+
+  #facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
 
+#adult temp
+filtered_temp2%>%
+  filter(Month %in% c("01","02","03","04","05"))%>%
+  ggplot(aes(x = TempC)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  geom_vline(aes(xintercept = 12), color = "black", linetype = "dotted", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  geom_vline(aes(xintercept = 15), color = "black", linetype = "dotted", linewidth = 0.5) + #the estimated mean value for unrelated in the simulation
+  facet_grid(Location~Month, scales="free_y")+
+  #facet_wrap(~Location, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
