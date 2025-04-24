@@ -9,9 +9,7 @@ library("ggmap")
 
 ### site information ####
 site_info <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\Time series\\Site Index_3.15.24.xlsx",sheet="Temp Monitors - Site Index")
-
 site_info %>% group_by(Status)%>%summarize(count=n_distinct(Name))
-
 #site_info %>%( depth_bins = cut(`Depth (feet) at MLW unless otherwise noted`, breaks=seq(0,120,10)))%>%group_by(depth_bins)%>%summarize(count=n_distinct(Name))
 
 ### Create the site map ####
@@ -25,16 +23,12 @@ SNEmap <- get_map(MA, zoom = 8, source="google", maptype="terrain", color="bw",c
 ggmap(SNEmap)+
   geom_point(aes(x=LONDD, y=LATDD, color=`Depth (feet) at MLW unless otherwise noted`), data=site_info)+
   #scale_color_viridis_b()
+  labs(color="Depth (ft)")+
   scale_colour_binned(type = "viridis",
                       breaks=seq(0,120,10),
                       limits = c(0, 120),
                       guide = guide_coloursteps(even.steps = FALSE,
                                                 show.limits = TRUE))
-
-#get the basemap
-#MA <- "Portland, ME"
-#bbox1 <- c(left = -74.568967, bottom = 40.058769, right = -67.010374, top = 44.713204)
-#SNEmap <-get_map(bbox1, source="google", maptype="terrain",zoom=6, color="bw",crop=TRUE) 
 
 ####BT data####
 bt <- read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Site Information")
@@ -47,7 +41,8 @@ lb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts
 wb <-read_excel("C:\\Users\\Tara.Dolan\\OneDrive - Commonwealth of Massachusetts\\Documents\\Winter Flounder\\Research Track\\MADMF Bottom Temperature data\\Tara_DataRequest.xlsx", sheet="Waquoit_Bay")
 
 temp_mon <-bind_rows(bb,bc,mr,brm,crp,lb,wb)%>% mutate(Date= as.Date(Date), Time=format(Time, "%H:%M:%S"))%>%
-  separate(Date,into=c("Year","Month","Day"),sep="-", remove=FALSE)%>%mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))
+  separate(Date,into=c("Year","Month","Day"),sep="-", remove=FALSE)%>%mutate(TempC=ifelse(is.na(TempC),TempC_Backup,TempC))%>%
+  mutate(jday=format(Date, "%j"))
 
 # Function to calculate mode
 mode_value <- function(x) {
@@ -65,17 +60,75 @@ summary_temp <- temp_mon %>%
     median_TempC = median(TempC, na.rm = TRUE),  # Median of TempC
     mode_TempC = mode_value(TempC)  # Mode of TempC
   )
-
 print(summary_temp)
 
-#temp_mon %>%
-#ggplot(aes(Date,TempC))+geom_point()+
-#facet_wrap(~Location, scales="free_y")+theme_classic()
+#Yearly comparisons. 
 
-temps <- temp_mon %>% group_by(Location, Date)%>% summarise(MeanDT=mean(TempC, na.omit=T),MedDT=median(TempC, na.omit=T).groups="keep")%>%
-  full_join(temp_mon)%>%
-  mutate(MeanDT_imputed=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))
+temp_mon%>%
+  filter(Location=="BB BARGE_TOWER")%>%
+  #filter(TempC==!is.na(TempC))%>%
+  ggplot(aes(jday, TempC, color=Year))+
+  geom_point()+
+  theme_classic()
+#we're seeing some yearly changes, but how best to represent?
 
+temps <- temp_mon %>% group_by(Location, Date)%>% 
+  summarise(MeanDT=mean(TempC, na.omit=T),MedDT=median(TempC, na.omit=T),
+            MeanDailyTemp=mean(MeanDailyTemp),.groups="keep")%>%
+  mutate(MeanDT_imputed=ifelse(is.na(MeanDailyTemp),MeanDT,MeanDailyTemp))%>%
+  separate(Date,into=c("Year","Month","Day"),sep="-", remove=FALSE)%>%
+  mutate(jday=format(Date, "%j"))
+
+temp_mon%>%
+  filter(Location=="BB BARGE_TOWER")%>%
+  #filter(TempC==!is.na(TempC))%>%
+  ggplot(aes(jday, MeanDailyTemp, color=Year))+
+  geom_point(size=0.5)+
+  scale_color_viridis_d()+
+  theme_classic()
+
+
+month_labels <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+month_breaks <- c(15, 45, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349)
+
+temps%>%
+  filter(Location=="BB BARGE_TOWER")%>%
+  mutate(jday=as.numeric(jday))%>%
+  arrange(Year, jday) %>%  # important: sort data
+  ggplot(aes(x = jday, y = MeanDT_imputed, color = Year, group = Year))+ 
+  geom_line()+
+  scale_color_viridis_d()+
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    name = "Month"
+  ) +
+  labs(y = "Mean Daily Temperature (°C)") +
+  ggtitle("Buzzards Bay Barge Tower")+
+  theme_classic()
+
+
+#maybe a heat plot?
+temps %>%
+  filter(Location == "BB BARGE_TOWER") %>%
+  ggplot(aes(x = jday, y = Year, fill = MeanDT_imputed)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "C", name = "Mean Daily Temp") +
+  theme_classic() +
+  labs(x = "Julian Day", y = "Year")
+
+temps%>%
+  filter(Location == "BB BARGE_TOWER") %>%
+  ggplot(aes(x = MeanDT_imputed)) +
+  geom_histogram(binwidth = 0.001, color = "light grey", fill = "light grey") +
+  #facet_wrap(~Month, scales="free_y")+
+  #facet_wrap(~Year, scales="free_y")+
+  labs(x = "Temperature C", y = "number of observations")+
+  theme_bw()
+
+
+######################################################################################
 #Create temperature indices
 annual_temp <-temps %>%group_by(Location, Year)%>% summarise(MeanAT=mean(MeanDailyTemp, na.omit=T),.groups="keep")
 annual_temp %>%
